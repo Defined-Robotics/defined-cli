@@ -1,0 +1,28 @@
+# Minimal robot definition for CLI testing
+name: test_robot
+version: "0.0.1"
+description: "Minimal robot for defined-cli tests"
+
+modules:
+  - name: drive_base
+    type: motor_controller
+    capabilities:
+      - name: differential_drive
+        type: differential_drive
+        parameters:
+          wheel_separation: 0.160
+          wheel_radius: 0.033
+          max_linear_velocity: 0.22
+          max_angular_velocity: 2.84
+
+  - name: lidar_module
+    type: sensor
+    capabilities:
+      - name: laser_scanner
+        type: lidar_2d
+        parameters:
+          range_min: 0.120
+          range_max: 3.500
+          samples: 360
+          update_rate: 5.0
+          topic: /scan

@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "defined-cli"
+version = "0.0.1"
+description = "Defined Robotics platform orchestrator — compile, deploy, and monitor robot tasks"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+dependencies = [
+    "defined-compiler>=0.0.1",
+    "defined-rdf>=0.0.1",
+    "roslibpy>=1.7",
+    "click>=8.0",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-mock",
+]
+tui = [
+    "textual>=0.40",
+]
+
+[project.scripts]
+defined = "defined_cli.main:cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/defined_cli"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

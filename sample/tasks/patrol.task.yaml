@@ -1,0 +1,23 @@
+# Sample patrol task for CLI testing
+name: PatrolTask
+description: "Simple patrol between two waypoints"
+steps:
+  - verb: go_to
+    params:
+      x: 1.0
+      y: 0.0
+      theta: 0.0
+  - verb: report
+    params:
+      message: "arrived_at_wp1"
+  - verb: wait
+    params:
+      duration: 2.0
+  - verb: go_to
+    params:
+      x: 0.0
+      y: 0.0
+      theta: 0.0
+  - verb: report
+    params:
+      message: "patrol_complete"
