@@ -46,3 +46,15 @@ class TransportBase(ABC):
     @abstractmethod
     def subscribe_status(self, callback: Callable[[TaskProgress], None]) -> None:
         """Subscribe to /task_status and deliver parsed TaskProgress to callback."""
+
+    @abstractmethod
+    def wait_ready(self, timeout: float = 10.0) -> bool:
+        """Wait for the backend (Nav2) to be ready. Returns False on timeout."""
+
+    def wait_for_executor(self, timeout: float = 60.0) -> bool:
+        """Wait for the BT executor to publish an IDLE heartbeat.
+
+        Returns True when the executor is ready, False on timeout.
+        Default implementation returns True immediately (backwards compat).
+        """
+        return True

@@ -28,7 +28,9 @@ class SimTarget(TargetBase):
         self._compose_file = compose_file or self._find_compose_file()
 
     def start(self) -> None:
-        self._compose("up", "-d")
+        # Clean slate: tear down old containers + volumes, then rebuild
+        self._compose("down", "-v", allow_failure=True)
+        self._compose("up", "--build", "-d")
 
     def stop(self) -> None:
         self._compose("down")
@@ -56,15 +58,15 @@ class SimTarget(TargetBase):
     # -- internals --
 
     def _compose(
-        self, *args: str, capture: bool = False,
+        self, *args: str, capture: bool = False, allow_failure: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         cmd = ["docker", "compose", "-f", str(self._compose_file), *args]
         try:
             return subprocess.run(
                 cmd,
-                capture_output=capture,
+                capture_output=True,
                 text=True,
-                check=not capture,
+                check=not allow_failure,
             )
         except FileNotFoundError as exc:
             raise BackendError(

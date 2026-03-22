@@ -25,9 +25,28 @@ Usage:
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .errors import CompilationError
+
+
+@dataclass(frozen=True)
+class StepInfo:
+    """Metadata for a single task step, extracted at compile time."""
+
+    verb: str  # original verb name, e.g. "go_to"
+    label: str  # human-readable, e.g. "GoTo → (1.0, 0.0)"
+    index: int  # 0-based position in the task
+
+
+@dataclass(frozen=True)
+class CompileResult:
+    """Result of compiling a task YAML to BT XML."""
+
+    xml_path: Path
+    task_name: str
+    steps: list[StepInfo] = field(default_factory=list)
 
 
 def compile_task(
@@ -35,12 +54,12 @@ def compile_task(
     rdf_yaml: Path,
     verbs_dir: Path | None = None,
     output_dir: Path | None = None,
-) -> Path:
+) -> CompileResult:
     """Compile a task YAML to BT XML.
 
     Runs the full compilation pipeline: parse task → expand verbs →
     capability gate → emit BT XML. Writes the output file and
-    returns its path.
+    returns a CompileResult with the path and step metadata.
 
     Args:
         task_yaml: Path to the task YAML file.
@@ -53,7 +72,7 @@ def compile_task(
             (the Docker volume mount point).
 
     Returns:
-        Absolute path to the generated BT XML file.
+        CompileResult with xml_path, task_name, and step metadata.
 
     Raises:
         CompilationError: On any compilation failure, with a
@@ -66,10 +85,11 @@ def compile_task(
     robot = _load_rdf(rdf_yaml)
 
     # --- Compile task to BT XML ---
-    task_name, xml = _compile(task_yaml, rdf_yaml, robot, verbs_dir)
+    task_name, xml, steps = _compile(task_yaml, rdf_yaml, robot, verbs_dir)
 
     # --- Write output file ---
-    return _write_output(xml, task_name, output_dir)
+    xml_path = _write_output(xml, task_name, output_dir)
+    return CompileResult(xml_path=xml_path, task_name=task_name, steps=steps)
 
 
 # ---------------------------------------------------------------------------
@@ -135,20 +155,11 @@ def _compile(
     rdf_yaml: Path,
     robot: object,
     verbs_dir: Path | None,
-) -> tuple[str, str]:
+) -> tuple[str, str, list[StepInfo]]:
     """Run the compilation pipeline: parse → expand → gate → emit.
 
-    Args:
-        task_yaml: Path to the task YAML file.
-        rdf_yaml: Path to the RDF file (used in error messages).
-        robot: Parsed ``Robot`` model instance.
-        verbs_dir: Optional custom verbs directory.
-
     Returns:
-        Tuple of (task_name, xml_string).
-
-    Raises:
-        CompilationError: On any pipeline failure.
+        Tuple of (task_name, xml_string, steps).
     """
     try:
         from defined_rdf.registry import CapabilityRegistry
@@ -159,7 +170,8 @@ def _compile(
         task = parser.load_task(task_yaml)
 
         expanded = []
-        for step in task.get("steps", []):
+        steps: list[StepInfo] = []
+        for i, step in enumerate(task.get("steps", [])):
             verb_name = step["verb"]
             params = step.get("params", {})
 
@@ -183,12 +195,13 @@ def _compile(
                 )
 
             expanded.append(verb_data)
+            steps.append(_make_step_info(verb_name, params, i))
 
         task_name = task.get("name", "CompiledTask")
         xml = bt_emitter.render_bt_xml(
             expanded, task_name=task_name, verbs_dir=verbs_dir
         )
-        return task_name, xml
+        return task_name, xml, steps
 
     except CompilationError:
         raise
@@ -236,6 +249,28 @@ def _write_output(xml: str, task_name: str, output_dir: Path | None) -> Path:
     output_path = output_dir / f"{task_name}.xml"
     output_path.write_text(xml)
     return output_path
+
+
+def _make_step_info(verb: str, params: dict, index: int) -> StepInfo:
+    """Build a human-readable StepInfo from a verb name and its parameters."""
+    # PascalCase action name (matches BT executor node names)
+    action = "".join(w.capitalize() for w in verb.split("_"))
+
+    # Build a short param summary for the label
+    if verb == "go_to":
+        x = params.get("x", "?")
+        y = params.get("y", "?")
+        label = f"{action} ({x}, {y})"
+    elif verb == "wait":
+        dur = params.get("duration", "?")
+        label = f"{action} ({dur}s)"
+    elif verb == "report":
+        msg = params.get("message", "")
+        label = f"{action}: {msg}" if msg else action
+    else:
+        label = action
+
+    return StepInfo(verb=verb, label=label, index=index)
 
 
 # ---------------------------------------------------------------------------
