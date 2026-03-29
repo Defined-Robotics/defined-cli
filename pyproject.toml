@@ -17,6 +17,9 @@ dependencies = [
     "rich>=13.0",
 ]
 
+# Optional dependency groups:
+#   tui  — end-users: enables --tui flag (Textual full-screen display)
+#   dev  — contributors: testing tools + all optional runtime features
 [project.optional-dependencies]
 tui = [
     "textual>=0.50",
