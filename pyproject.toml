@@ -7,20 +7,24 @@ name = "defined-cli"
 version = "0.0.1"
 description = "Defined Robotics platform orchestrator — compile, deploy, and monitor robot tasks"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 license = "Apache-2.0"
 dependencies = [
     "defined-compiler>=0.0.1",
     "defined-rdf>=0.0.1",
-    "roslibpy>=1.7",
+    "roslibpy>=2.0",
     "click>=8.0",
     "rich>=13.0",
 ]
 
 [project.optional-dependencies]
+tui = [
+    "textual>=0.50",
+]
 dev = [
     "pytest>=8.0",
     "pytest-mock",
+    "textual>=0.50",
 ]
 
 [project.scripts]
