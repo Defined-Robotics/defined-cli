@@ -1,0 +1,13 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  ci:
+    uses: Defined-Robotics/workspace/.github/workflows/python-ci-template.yml@trunk
+    with:
+      repo: cli
+      run_integration: ${{ github.event_name == 'pull_request' }}
