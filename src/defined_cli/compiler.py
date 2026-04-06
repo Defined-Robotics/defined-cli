@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import NoReturn
 
 from .errors import CompilationError
 
@@ -278,7 +279,7 @@ def _make_step_info(verb: str, params: dict, index: int) -> StepInfo:
 # ---------------------------------------------------------------------------
 
 
-def _translate_rdf_error(exc: Exception, rdf_yaml: Path) -> None:
+def _translate_rdf_error(exc: Exception, rdf_yaml: Path) -> NoReturn:
     """Translate RDF parsing exceptions to ``CompilationError``.
 
     Handles Pydantic ``ValidationError``, YAML ``ScannerError``,
@@ -316,7 +317,7 @@ def _translate_rdf_error(exc: Exception, rdf_yaml: Path) -> None:
     ) from exc
 
 
-def _translate_compilation_error(exc: Exception) -> None:
+def _translate_compilation_error(exc: Exception) -> NoReturn:
     """Translate compilation exceptions to ``CompilationError``.
 
     Handles YAML errors, Jinja2 template errors, and unknown

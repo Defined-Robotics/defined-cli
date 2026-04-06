@@ -7,7 +7,7 @@ import pytest
 
 from defined_cli.compiler import CompileResult, StepInfo
 from defined_cli.display import DisplayBase
-from defined_cli.errors import BackendError, CompilationError, ConnectionError, TaskExecutionError
+from defined_cli.errors import BackendError, CompilationError, TaskExecutionError, TransportConnectionError as ConnectionError
 from defined_cli.orchestrator import Orchestrator
 from defined_cli.target import TargetBase
 from defined_cli.transport import TaskProgress, TransportBase

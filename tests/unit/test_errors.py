@@ -3,9 +3,9 @@
 from defined_cli.errors import (
     BackendError,
     CompilationError,
-    ConnectionError,
     DefinedError,
     TaskExecutionError,
+    TransportConnectionError as ConnectionError,
 )
 
 

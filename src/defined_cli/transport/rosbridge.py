@@ -9,7 +9,7 @@ from collections.abc import Callable
 
 import roslibpy
 
-from defined_cli.errors import ConnectionError as DefinedConnectionError
+from defined_cli.errors import TransportConnectionError as DefinedConnectionError
 from defined_cli.transport import TaskProgress, TransportBase
 
 # roslibpy uses a global Twisted reactor. We start it once and reuse it.

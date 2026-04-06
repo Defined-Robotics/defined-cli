@@ -9,7 +9,7 @@ from pathlib import Path
 
 from defined_cli.compiler import CompileResult
 from defined_cli.display import DisplayBase
-from defined_cli.errors import ConnectionError, TaskExecutionError
+from defined_cli.errors import TaskExecutionError, TransportConnectionError
 from defined_cli.target import TargetBase
 from defined_cli.transport import TaskProgress, TransportBase
 
@@ -33,6 +33,7 @@ class Orchestrator:
         self._display = display
         self._compile_fn = compile_fn
         self._done_event = threading.Event()
+        self._first_status = threading.Event()
         self._final_status: TaskProgress | None = None
 
     def run(
@@ -117,12 +118,12 @@ class Orchestrator:
             self._transport.disconnect()
 
     def _connect_with_retries(self) -> None:
-        last_error: ConnectionError | None = None
+        last_error: TransportConnectionError | None = None
         for attempt in range(_CONNECT_RETRIES):
             try:
                 self._transport.connect()
                 return
-            except ConnectionError as exc:
+            except TransportConnectionError as exc:
                 last_error = exc
                 if attempt < _CONNECT_RETRIES - 1:
                     self._display.show_phase(

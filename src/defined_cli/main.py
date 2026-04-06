@@ -30,6 +30,7 @@ from rich.console import Console
 from . import __version__
 from .compiler import compile_task
 from .display.rich import RichDisplay
+from .display import DisplayBase
 from .errors import BackendError, DefinedError
 from .orchestrator import Orchestrator
 from .target import TargetBase, TargetStatus

@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from defined_cli.errors import ConnectionError as DefinedConnectionError
+from defined_cli.errors import TransportConnectionError as DefinedConnectionError
 from defined_cli.transport import TaskProgress
 from defined_cli.transport.rosbridge import RosbridgeTransport
 
