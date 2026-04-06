@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "defined-cli"
-version = "0.0.1"
+version = "0.0.2"
 description = "Defined Robotics platform orchestrator — compile, deploy, and monitor robot tasks"
 readme = "README.md"
 requires-python = ">=3.12"
