@@ -68,7 +68,7 @@ class CompilationError(DefinedError):
     """
 
 
-class ConnectionError(DefinedError):
+class TransportConnectionError(DefinedError):
     """Cannot connect to the platform backend.
 
     Raised when the transport layer fails to establish a connection.

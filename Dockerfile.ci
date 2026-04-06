@@ -1,0 +1,19 @@
+FROM ghcr.io/defined-robotics/python-base:3.12
+
+# git needed for pip install from GitHub
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install upstream deps from source (until published to PyPI)
+RUN pip install --no-cache-dir \
+    "defined-rdf @ git+https://github.com/Defined-Robotics/defined-rdf.git@trunk" \
+    "defined-compiler @ git+https://github.com/Defined-Robotics/defined-compiler.git@trunk"
+
+COPY pyproject.toml .
+RUN pip install --no-cache-dir -e ".[dev]"
+
+COPY src/ src/
+COPY tests/ tests/
+COPY sample/ sample/
+
+CMD ["pytest", "tests/", "-v"]

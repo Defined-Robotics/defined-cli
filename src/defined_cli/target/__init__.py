@@ -6,20 +6,38 @@ paths the backend can access (e.g., Docker volume mounts).
 
 The default implementation is ``SimTarget`` which manages the
 simulation stack via ``docker compose``.
-
-Key method:
-    ``resolve_xml_path(host_path)`` — converts a host-side file
-    path to the path the backend sees. For ``SimTarget``, this
-    maps ``work/verb-compiler/build/task.xml`` to ``/bt_xml/task.xml``
-    (the Docker volume mount point).
-
-Future targets:
-    - ``MockTarget`` — hardware mocks (motor encoders, LIDAR)
-    - ``HardwareTarget`` — real robot via SSH/serial, with
-      ``discover_modules()`` and ``health_check()`` extensions
-
-See Also:
-    ``conventions/python.md`` for implementation guidelines.
 """
 
 from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from enum import Enum
+from pathlib import Path
+
+
+class TargetStatus(Enum):
+    """Current state of the backend managed by a Target."""
+    RUNNING = "running"
+    STOPPED = "stopped"
+    STARTING = "starting"
+    ERROR = "error"
+
+
+class TargetBase(ABC):
+    """Abstract base for backend lifecycle management."""
+
+    @abstractmethod
+    def start(self) -> None:
+        """Bring up the backend. Raises BackendError on failure."""
+
+    @abstractmethod
+    def stop(self) -> None:
+        """Tear down the backend."""
+
+    @abstractmethod
+    def status(self) -> TargetStatus:
+        """Query whether the backend is running."""
+
+    @abstractmethod
+    def resolve_xml_path(self, host_path: Path) -> str:
+        """Translate a host-side BT XML path to the path the backend sees."""
