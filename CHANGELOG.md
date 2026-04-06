@@ -17,8 +17,6 @@ Release PRs (`release/vX.Y.Z`) promote `[Unreleased]` → the versioned heading.
 - Move `textual` to optional `[tui]` extra; keep in `[dev]` for test runs
 - Lower `requires-python` to `>=3.9` for broader compatibility
 
-## [0.0.1] - 2026-03-22
-
 ### Added
 - Initial package scaffold: `defined-cli` with `compile`, `run`, `stop`, `status` commands
 - Error hierarchy: `DefinedError`, `CompilationError`, `TransportConnectionError`, `TaskExecutionError`, `BackendError`
