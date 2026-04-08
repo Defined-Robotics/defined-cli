@@ -46,6 +46,11 @@ class RosbridgeTransport(TransportBase):
         self._reactor: object | None = None
         self._status_topic: roslibpy.Topic | None = None
 
+    @property
+    def is_connected(self) -> bool:
+        """True if the WebSocket connection is active."""
+        return self._ros is not None and self._ros.is_connected
+
     def connect(self) -> None:
         self._reactor = reactor = _get_reactor()
         self._ros = roslibpy.Ros(host=self._host, port=self._port)

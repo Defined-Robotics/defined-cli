@@ -58,3 +58,8 @@ class TransportBase(ABC):
         Default implementation returns True immediately (backwards compat).
         """
         return True
+
+    @property
+    def is_connected(self) -> bool:
+        """True if currently connected. Subclasses should override."""
+        return False

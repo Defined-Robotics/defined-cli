@@ -36,6 +36,7 @@ from .orchestrator import Orchestrator
 from .target import TargetBase, TargetStatus
 from .target.sim import SimTarget
 from .transport.rosbridge import RosbridgeTransport
+from .state.store import StateStore
 
 # Rich console for formatted output. Writes to stderr so stdout
 # remains clean for piping (e.g., ``defined compile ... | xmllint``).
@@ -289,3 +290,169 @@ def status(target: str, host: str, port: int) -> None:
     except DefinedError as exc:
         _show_error(exc)
         raise SystemExit(1) from exc
+
+
+# ---------------------------------------------------------------------------
+# monitor
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+@click.option(
+    "--task",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Task YAML to auto-queue when monitor starts.",
+)
+@click.option(
+    "--rdf",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Robot RDF YAML (required when --task is given).",
+)
+@click.option("--verbs-dir", type=click.Path(path_type=Path), default=None)
+@click.option("--host", default="localhost", help="Rosbridge host.")
+@click.option("--port", default=9090, type=int, help="Rosbridge port.")
+@click.option(
+    "--no-launch",
+    is_flag=True,
+    help="Skip backend startup (assume already running).",
+)
+@click.pass_context
+def monitor(
+    ctx: click.Context,
+    task: Path | None,
+    rdf: Path | None,
+    verbs_dir: Path | None,
+    host: str,
+    port: int,
+    no_launch: bool,
+) -> None:
+    """Long-lived mission control TUI.
+
+    Connects to the robot once and stays connected. Use --task to
+    auto-queue a mission when the monitor starts.
+
+    Examples:
+
+      defined monitor --no-launch
+
+      defined monitor --task tasks/patrol.task.yaml --rdf robot.rdf.yaml --no-launch
+    """
+    from .mission.controller import MissionController
+    from .tui.monitor import MonitorDisplay
+
+    verbose = ctx.obj.get("verbose", False)
+
+    if task is not None and rdf is None:
+        raise click.UsageError("--rdf is required when --task is provided")
+    if task is not None and not task.exists():
+        raise click.BadParameter(f"{task} does not exist", param_hint="--task")
+    if rdf is not None and not rdf.exists():
+        raise click.BadParameter(f"{rdf} does not exist", param_hint="--rdf")
+
+    try:
+        target_obj: TargetBase | None = None
+        if not no_launch:
+            target_obj = _make_target("sim")
+            _console.print("[dim]Starting simulation backend…[/]")
+            target_obj.start()
+
+        store = StateStore()
+        transport = RosbridgeTransport(host=host, port=port)
+        controller = MissionController(
+            store=store,
+            transport=transport,
+            compile_fn=compile_task,
+            target=target_obj,
+        )
+
+        launch_fn = None
+        if task is not None:
+            _task = task
+            _rdf = rdf
+            _verbs_dir = verbs_dir
+            launch_fn = lambda: controller.launch_mission(_task, _rdf, verbs_dir=_verbs_dir)
+
+        MonitorDisplay(controller).run(launch_fn=launch_fn)
+
+    except KeyboardInterrupt:
+        pass
+    except DefinedError as exc:
+        _show_error(exc, verbose=verbose)
+        raise SystemExit(1) from exc
+
+
+# ---------------------------------------------------------------------------
+# world
+# ---------------------------------------------------------------------------
+
+
+@cli.group()
+def world() -> None:
+    """Manage the world model (Points of Interest, map data)."""
+
+
+@world.command("add")
+@click.argument("name")
+@click.argument("x", type=float)
+@click.argument("y", type=float)
+@click.option(
+    "--type",
+    "poi_type",
+    type=click.Choice(["static", "constant", "dynamic"]),
+    default="static",
+    show_default=True,
+    help="POI lifetime tier.",
+)
+@click.option("--radius", default=0.5, type=float, show_default=True, help="Area radius in metres.")
+def world_add(name: str, x: float, y: float, poi_type: str, radius: float) -> None:
+    """Add or update a Point of Interest.
+
+    Examples:
+
+      defined world add dock 0.0 0.0 --type constant
+
+      defined world add survey-1 1.5 2.0
+    """
+    from .state.blackboard import Blackboard
+
+    store = StateStore()
+    snapshot = store.load()
+    bb = Blackboard(data={"world": {"pois": snapshot.world.pois}})
+    bb.set_poi(name, (x, y), radius=radius, poi_type=poi_type)
+    snapshot.world.pois = bb.list_pois()
+    store.save(snapshot)
+    _console.print(f"[green]✓[/] POI '{name}' ({x}, {y}) type={poi_type} radius={radius}")
+
+
+@world.command("list")
+def world_list() -> None:
+    """List all defined Points of Interest."""
+    from rich.table import Table
+
+    store = StateStore()
+    snapshot = store.load()
+    pois = snapshot.world.pois
+
+    if not pois:
+        _console.print("[dim]No POIs defined. Use: defined world add <name> <x> <y>[/]")
+        return
+
+    table = Table(title="Points of Interest")
+    table.add_column("Name", style="cyan")
+    table.add_column("X", justify="right")
+    table.add_column("Y", justify="right")
+    table.add_column("Type", style="dim")
+    table.add_column("Radius", justify="right", style="dim")
+
+    for poi_name, poi in pois.items():
+        center = poi.get("center", {})
+        table.add_row(
+            poi_name,
+            str(round(center.get("x", 0.0), 3)),
+            str(round(center.get("y", 0.0), 3)),
+            poi.get("type", "static"),
+            str(poi.get("radius", 0.5)),
+        )
+    _console.print(table)
