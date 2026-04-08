@@ -12,11 +12,22 @@ pip install -e ".[tui]"   # with TUI display
 # Compile a task
 defined compile tasks/patrol.task.yaml --rdf robot.rdf.yaml
 
-# Run (compile + deploy + monitor)
+# Run a single task (compile + deploy + monitor, then exit)
 defined run tasks/patrol.task.yaml --rdf robot.rdf.yaml
 
 # Run with full-screen TUI
 defined run tasks/patrol.task.yaml --rdf robot.rdf.yaml --tui
+
+# Long-lived monitor (connect once, run many missions)
+defined monitor --no-launch
+
+# Monitor and auto-queue a task on startup
+defined monitor --task tasks/patrol.task.yaml --rdf robot.rdf.yaml --no-launch
+
+# Manage Points of Interest
+defined world add dock 0.0 0.0 --type constant
+defined world add survey-1 1.5 2.0
+defined world list
 
 # Check backend status
 defined status
@@ -25,12 +36,22 @@ defined status
 defined stop
 ```
 
+> **Note:** negative coordinates require the `--` separator:
+> `defined world add name -- -1.0 3.5`
+
 ## Architecture
 
 ```
 defined-cli (Python, host, NO ROS2)
 ├── CLI Layer (Click) ────── main.py
-├── Orchestrator ─────────── orchestrator.py
+├── Mission Control
+│   ├── MissionController ── mission/controller.py  (persistent loop)
+│   └── POI Resolver ─────── mission/resolver.py    ($world.pois.X expansion)
+├── State Layer
+│   ├── StateStore ───────── state/store.py         (~/.defined/state.yaml)
+│   ├── Blackboard ───────── state/blackboard.py    (dot-path KV + POIs)
+│   └── Models ───────────── state/model.py         (RobotState, WorldState, …)
+├── Orchestrator ─────────── orchestrator.py        (single-task run)
 ├── Compiler Wrapper ─────── compiler.py
 ├── Error System ─────────── errors.py
 ├── Protocols
@@ -38,15 +59,37 @@ defined-cli (Python, host, NO ROS2)
 │   ├── Transport ─────── transport/__init__.py
 │   └── Display ──────── display/__init__.py
 └── Implementations
-    ├── SimTarget ──────── target/sim.py (docker compose)
-    ├── RosbridgeTransport transport/rosbridge.py (roslibpy WebSocket)
-    ├── RichDisplay ────── display/rich.py (inline console)
-    └── TuiDisplay ─────── tui/app.py (full-screen Textual)
+    ├── SimTarget ──────── target/sim.py            (docker compose)
+    ├── RosbridgeTransport transport/rosbridge.py   (roslibpy WebSocket)
+    ├── RichDisplay ────── display/rich.py          (inline console)
+    ├── TuiDisplay ─────── tui/app.py               (single-task Textual TUI)
+    └── MonitorDisplay ─── tui/monitor.py           (4-panel mission monitor)
 ```
 
-**Pipeline:** start backend → check readiness → connect transport → compile task → deploy BT XML → monitor execution
+**Single-task pipeline (`defined run`):** start backend → check readiness → connect transport → compile task → deploy BT XML → monitor execution → exit
+
+**Persistent pipeline (`defined monitor`):** connect once → hold state in memory → accept missions → compile → deploy → monitor → return to IDLE → repeat
 
 **Design constraint:** No ROS2 imports anywhere (DR-010). Communication is via rosbridge WebSocket only.
+
+**Extraction boundary:** `state/` and `mission/` have zero imports from `click`, `rich`, or `textual` so they can be moved to `defined-core` in Milestone 2 without modification.
+
+## State & World Model
+
+State is persisted atomically to `~/.defined/state.yaml` on every transition.
+
+```
+~/.defined/state.yaml
+├── robot:
+│   ├── status: OFFLINE | IDLE | ON_MISSION | ERROR
+│   └── current_mission: <task name> | null
+├── world:
+│   └── pois:
+│       └── <name>: {center: {x, y}, radius, type: constant|static|dynamic}
+└── history: [MissionRecord, …]
+```
+
+POI references in task YAML (`$world.pois.dock`) are resolved at compile time by `mission/resolver.py`.
 
 ## Extending
 
@@ -73,6 +116,9 @@ class ZenohTransport(TransportBase):
     def send_task(self, bt_xml_path: str) -> None: ...
     def subscribe_status(self, callback) -> None: ...
     def wait_ready(self, timeout: float = 10.0) -> bool: ...
+
+    @property
+    def is_connected(self) -> bool: ...  # required by MissionController
 ```
 
 ### Add a new Display
