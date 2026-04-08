@@ -126,6 +126,20 @@ class RosbridgeTransport(TransportBase):
 
         self._reactor.callFromThread(self._status_topic.subscribe, _on_message)
 
+    def subscribe_reports(self, callback: Callable[[str], None]) -> None:
+        if self._ros is None or not self._ros.is_connected:
+            return
+        self._reports_topic = roslibpy.Topic(
+            self._ros, "/task_reports", "std_msgs/String",
+        )
+
+        def _on_report(msg: dict) -> None:
+            data = msg.get("data", "")
+            if data:
+                callback(data)
+
+        self._reactor.callFromThread(self._reports_topic.subscribe, _on_report)
+
     def wait_for_executor(self, timeout: float = 60.0) -> bool:
         """Wait for the BT executor to publish an IDLE heartbeat on /task_status."""
         if self._ros is None or not self._ros.is_connected:

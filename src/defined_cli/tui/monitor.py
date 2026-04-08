@@ -266,16 +266,8 @@ class MonitorDisplay:
                 while not self._done.is_set():
                     live.update(self.build_renderable())
 
-                    # Auto-exit after single task completes
-                    if (
-                        self._launched
-                        and not self._controller.is_mission_running
-                        and self._controller.robot_status in (RobotStatus.IDLE, RobotStatus.OFFLINE)
-                    ):
-                        # Give the user 2 seconds to see the final state
-                        time.sleep(2.0)
-                        live.update(self.build_renderable())
-                        break
+                    # Stay running after task completes so user can
+                    # review the final state.  Exit only on Ctrl-C.
 
                     # Attempt reconnect if transport dropped (not mid-mission)
                     if (

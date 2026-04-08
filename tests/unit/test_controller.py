@@ -186,6 +186,29 @@ class TestLaunchMission:
         assert loaded.robot.last_mission_id is not None
         assert "patrol" in loaded.robot.last_mission_id
 
+    def test_target_resolves_xml_path_to_container_path(
+        self, controller, mock_transport, mock_target, task_yaml, rdf_yaml
+    ):
+        """When a target is set, send_task must receive the container path, not the host path."""
+        _simulate_success(mock_transport)
+        controller._run_mission(task_yaml, rdf_yaml, None, 30.0)
+        mock_target.resolve_xml_path.assert_called_once_with(_SAMPLE_RESULT.xml_path)
+        mock_transport.send_task.assert_called_once_with("/bt_xml/PatrolTask.xml")
+
+    def test_no_target_sends_host_path(
+        self, mock_transport, tmp_store, mock_compile, task_yaml, rdf_yaml
+    ):
+        """Without a target, send_task receives the raw host path."""
+        ctrl = MissionController(
+            store=tmp_store,
+            transport=mock_transport,
+            compile_fn=mock_compile,
+            target=None,
+        )
+        _simulate_success(mock_transport)
+        ctrl._run_mission(task_yaml, rdf_yaml, None, 30.0)
+        mock_transport.send_task.assert_called_once_with(str(_SAMPLE_RESULT.xml_path))
+
 
 # ---------------------------------------------------------------------------
 # Reports

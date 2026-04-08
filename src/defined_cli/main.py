@@ -352,9 +352,8 @@ def monitor(
         raise click.BadParameter(f"{rdf} does not exist", param_hint="--rdf")
 
     try:
-        target_obj: TargetBase | None = None
+        target_obj = _make_target("sim")
         if not no_launch:
-            target_obj = _make_target("sim")
             _console.print("[dim]Starting simulation backend…[/]")
             target_obj.start()
 
@@ -456,3 +455,104 @@ def world_list() -> None:
             str(poi.get("radius", 0.5)),
         )
     _console.print(table)
+
+
+@world.command("mark")
+@click.argument("name")
+@click.option(
+    "--type",
+    "poi_type",
+    type=click.Choice(["static", "constant"]),
+    default="static",
+    show_default=True,
+    help="POI lifetime tier.",
+)
+@click.option("--radius", default=0.5, type=float, show_default=True, help="Area radius in metres.")
+@click.option("--host", default="localhost", help="Rosbridge host.")
+@click.option("--port", default=9090, type=int, help="Rosbridge port.")
+def world_mark(name: str, poi_type: str, radius: float, host: str, port: int) -> None:
+    """Mark the robot's current position as a named POI.
+
+    Queries the robot's pose via rosbridge and saves as a POI.
+
+    Examples:
+
+      defined world mark survey-1
+
+      defined world mark dock --type constant
+    """
+    from .state.blackboard import Blackboard
+    from .transport.pose import fetch_robot_pose
+
+    try:
+        x, y = fetch_robot_pose(host=host, port=port)
+    except (TimeoutError, ConnectionError) as exc:
+        _console.print(f"[bold red]✗ {exc}[/]")
+        raise SystemExit(1) from exc
+
+    store = StateStore()
+    snapshot = store.load()
+    bb = Blackboard(data={"world": {"pois": snapshot.world.pois}})
+    bb.set_poi(name, (x, y), radius=radius, poi_type=poi_type)
+    snapshot.world.pois = bb.list_pois()
+    store.save(snapshot)
+    _console.print(f"[green]✓[/] POI '{name}' marked at ({x:.3f}, {y:.3f}) type={poi_type}")
+
+
+@world.command("watch")
+@click.option(
+    "--type",
+    "poi_type",
+    type=click.Choice(["static", "constant"]),
+    default="static",
+    show_default=True,
+    help="POI lifetime tier.",
+)
+@click.option("--radius", default=0.5, type=float, show_default=True, help="Area radius in metres.")
+@click.option("--host", default="localhost", help="Rosbridge host.")
+@click.option("--port", default=9090, type=int, help="Rosbridge port.")
+def world_watch(poi_type: str, radius: float, host: str, port: int) -> None:
+    """Watch for map clicks and save as POIs.
+
+    Subscribes to /clicked_point via rosbridge. Click on the map in
+    Foxglove or RViz, then name each point in the terminal. Ctrl+C to stop.
+
+    Examples:
+
+      defined world watch
+
+      defined world watch --type constant
+    """
+    from .state.blackboard import Blackboard
+    from .transport.pose import subscribe_clicked_point
+
+    store = StateStore()
+    count = 0
+
+    def _on_click(x: float, y: float) -> None:
+        nonlocal count
+        _console.print(f"\n[cyan][click][/] ({x:.2f}, {y:.2f})", end="  ")
+        poi_name = click.prompt("Name")
+        snapshot = store.load()
+        bb = Blackboard(data={"world": {"pois": snapshot.world.pois}})
+        bb.set_poi(poi_name, (x, y), radius=radius, poi_type=poi_type)
+        snapshot.world.pois = bb.list_pois()
+        store.save(snapshot)
+        _console.print(f"  [green]✓[/] saved [{poi_type}]")
+        count += 1
+
+    try:
+        _console.print("[dim]Watching for clicks on /clicked_point… (Ctrl+C to stop)[/]")
+        ros, topic = subscribe_clicked_point(host=host, port=port, callback=_on_click)
+
+        # Block until user presses Ctrl+C
+        import threading
+        stop = threading.Event()
+        try:
+            stop.wait()
+        except KeyboardInterrupt:
+            pass
+    except (ConnectionError, KeyboardInterrupt):
+        pass
+    finally:
+        _console.print(f"\n[dim]Saved {count} POI(s).[/]")

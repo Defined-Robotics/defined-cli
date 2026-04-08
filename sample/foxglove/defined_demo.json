@@ -1,0 +1,70 @@
+{
+  "configById": {
+    "3d-panel": {
+      "cameraState": {
+        "distance": 15,
+        "perspective": true,
+        "phi": 60,
+        "target": [0, 0, 0],
+        "thetaOffset": -45
+      },
+      "followMode": "follow-pose",
+      "followTf": "base_link",
+      "scene": {
+        "enableStats": false
+      },
+      "topics": {
+        "/map": {
+          "visible": true
+        },
+        "/scan": {
+          "visible": true,
+          "colorMode": "flat",
+          "flatColor": "#ff0000"
+        },
+        "/explore/frontiers": {
+          "visible": true
+        },
+        "/global_costmap/costmap": {
+          "visible": false
+        }
+      },
+      "transforms": {
+        "enablePreloading": true
+      }
+    },
+    "publish-panel": {
+      "topicName": "/clicked_point",
+      "datatype": "geometry_msgs/msg/PointStamped",
+      "value": "{\n  \"header\": {\n    \"frame_id\": \"map\"\n  },\n  \"point\": {\n    \"x\": 0.0,\n    \"y\": 0.0,\n    \"z\": 0.0\n  }\n}"
+    },
+    "raw-messages": {
+      "topicPath": "/task_status",
+      "diffEnabled": false,
+      "diffMethod": "custom",
+      "diffTopicPath": "",
+      "showFullMessageForDiff": false
+    },
+    "topic-graph": {
+      "topicFilter": "/task_status|/task_command|/clicked_point|/map|/scan"
+    }
+  },
+  "globalVariables": {},
+  "userNodes": {},
+  "layout": {
+    "direction": "row",
+    "first": {
+      "direction": "column",
+      "first": "3d-panel",
+      "second": "publish-panel",
+      "splitPercentage": 75
+    },
+    "second": {
+      "direction": "column",
+      "first": "raw-messages",
+      "second": "topic-graph",
+      "splitPercentage": 60
+    },
+    "splitPercentage": 70
+  }
+}

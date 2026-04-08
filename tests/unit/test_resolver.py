@@ -162,6 +162,36 @@ class TestTargetExpansion:
         assert params["theta"] == 1.57
         assert params["timeout"] == 30.0
 
+    def test_patrol_pois_task_resolves_all_steps(self):
+        """patrol_pois.task.yaml resolves all $world.pois references."""
+        import yaml
+        from pathlib import Path
+
+        task_path = Path(__file__).resolve().parent.parent.parent / "sample" / "tasks" / "patrol_pois.task.yaml"
+        task_dict = yaml.safe_load(task_path.read_text())
+
+        bb = Blackboard()
+        bb.set_poi("survey-1", (1.5, 2.0))
+        bb.set_poi("survey-2", (3.0, 1.0))
+        bb.set_poi("survey-3", (2.0, -1.0))
+        bb.set_poi("dock", (0.0, 0.0), poi_type="constant")
+
+        resolved = resolve_references(task_dict, bb)
+
+        # All go_to steps should have x/y, no target key
+        go_to_steps = [s for s in resolved["steps"] if s["verb"] == "go_to"]
+        assert len(go_to_steps) == 4
+        for step in go_to_steps:
+            assert "x" in step["params"]
+            assert "y" in step["params"]
+            assert "target" not in step["params"]
+
+        # Verify specific coordinates
+        assert go_to_steps[0]["params"]["x"] == 1.5   # survey-1
+        assert go_to_steps[1]["params"]["x"] == 3.0   # survey-2
+        assert go_to_steps[2]["params"]["y"] == -1.0   # survey-3
+        assert go_to_steps[3]["params"]["x"] == 0.0   # dock
+
     def test_target_with_non_poi_value_kept_as_is(self):
         bb = Blackboard()
         bb.set("world.pois.simple", "just-a-string")

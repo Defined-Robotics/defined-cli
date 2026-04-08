@@ -51,6 +51,12 @@ class TransportBase(ABC):
     def wait_ready(self, timeout: float = 10.0) -> bool:
         """Wait for the backend (Nav2) to be ready. Returns False on timeout."""
 
+    def subscribe_reports(self, callback: Callable[[str], None]) -> None:
+        """Subscribe to /task_reports and deliver message strings to callback.
+
+        Default implementation is a no-op (backwards compat).
+        """
+
     def wait_for_executor(self, timeout: float = 60.0) -> bool:
         """Wait for the BT executor to publish an IDLE heartbeat.
 

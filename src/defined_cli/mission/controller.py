@@ -89,6 +89,7 @@ class MissionController:
     def connect(self) -> None:
         """Connect the transport and transition robot to IDLE."""
         self._transport.connect()
+        self._transport.subscribe_reports(self._on_report)
         with self._lock:
             self._snapshot.robot.current = RobotStatus.IDLE
             self._store.save(self._snapshot)
@@ -258,10 +259,19 @@ class MissionController:
         Called from the Twisted reactor thread — must be lock-safe.
         """
         with self._lock:
+            # Ignore IDLE heartbeats — they reset current/total/progress to 0
+            # which would clobber the final SUCCESS/FAILURE snapshot.
+            if progress.status == "IDLE":
+                return
             self._step_progress = progress
 
         if progress.status in ("SUCCESS", "FAILURE"):
             self._done_event.set()
+
+    def _on_report(self, message: str) -> None:
+        """Handle a report message from /task_reports."""
+        with self._lock:
+            self._reports.append(message)
 
     # ------------------------------------------------------------------
     # Read-only state properties (all thread-safe via _lock)

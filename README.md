@@ -22,7 +22,7 @@ defined run tasks/patrol.task.yaml --rdf robot.rdf.yaml --tui
 defined monitor --no-launch
 
 # Monitor and auto-queue a task on startup
-defined monitor --task tasks/patrol.task.yaml --rdf robot.rdf.yaml --no-launch
+defined monitor --task sample/tasks/patrol.task.yaml --rdf sample/robot.rdf.yaml --no-launch
 
 # Manage Points of Interest
 defined world add dock 0.0 0.0 --type constant

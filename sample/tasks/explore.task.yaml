@@ -1,0 +1,11 @@
+# Autonomous frontier exploration
+# Robot autonomously maps the environment using frontier-based SLAM
+name: ExploreMap
+description: "Autonomously explore and map the environment"
+steps:
+  - verb: explore
+    params:
+      timeout: 300.0
+  - verb: report
+    params:
+      message: "exploration_complete"
