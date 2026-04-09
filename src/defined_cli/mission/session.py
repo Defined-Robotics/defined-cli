@@ -1,0 +1,566 @@
+"""DefinedSession — unified Python API for all robot interaction.
+
+Single entry point that replaces both Orchestrator (one-shot) and
+MissionController (persistent). Manages connection lifecycle, mission
+execution, state persistence, and event notification.
+
+This module has zero imports from click, rich, or textual.
+
+Usage (script):
+    session = DefinedSession(target=SimTarget(), transport=RosbridgeTransport(),
+                             store=StateStore(), compile_fn=compile_task)
+    session.connect()
+    session.add_poi("dock", 0.0, 0.0)
+    session.run_mission(Path("patrol.task.yaml"), Path("robot.rdf.yaml"))
+    session.disconnect()
+
+Usage (TUI):
+    app = DefinedApp(session)
+    app.run()
+"""
+
+from __future__ import annotations
+
+import tempfile
+import threading
+import time
+from collections import deque
+from collections.abc import Callable
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+import yaml
+
+from defined_cli.mission.events import ConnectionStatus, MissionStatus, SessionEvent
+from defined_cli.mission.resolver import ResolverError, resolve_references
+from defined_cli.state.blackboard import Blackboard
+from defined_cli.state.model import MissionRecord, RobotStatus, StateSnapshot
+from defined_cli.state.store import StateStore
+from defined_cli.transport import TaskProgress, TransportBase
+
+if TYPE_CHECKING:
+    from defined_cli.compiler import CompileResult, StepInfo
+    from defined_cli.target import TargetBase
+
+
+_RECONNECT_INTERVAL = 2.0
+_RECONNECT_MAX_BACKOFF = 30.0
+_DEFAULT_TIMEOUT = 300.0
+_CONNECT_RETRIES = 30
+_CONNECT_DELAY = 3.0
+
+
+class DefinedSession:
+    """Unified Python API for robot interaction.
+
+    Manages the full lifecycle: connection, mission execution, state
+    persistence, and event notification. Thread-safe.
+
+    Args:
+        target: Backend lifecycle manager (SimTarget, HwTarget).
+        transport: Communication layer (RosbridgeTransport).
+        store: State persistence (StateStore).
+        compile_fn: Task compiler function (compile_task).
+    """
+
+    def __init__(
+        self,
+        target: TargetBase,
+        transport: TransportBase,
+        store: StateStore,
+        compile_fn: Callable[..., CompileResult],
+    ) -> None:
+        self._target = target
+        self._transport = transport
+        self._store = store
+        self._compile_fn = compile_fn
+
+        self._lock = threading.Lock()
+        self._done_event = threading.Event()
+        self._stop_event = threading.Event()
+        self._listeners: list[Callable[[SessionEvent], None]] = []
+        self._snapshot: StateSnapshot = store.load()
+        self._reports: deque[str] = deque(maxlen=100)
+
+        self._connection_status = ConnectionStatus.DISCONNECTED
+        self._mission_status = MissionStatus.IDLE
+        self._step_progress: TaskProgress | None = None
+        self._steps: list[StepInfo] = []
+        self._current_mission: MissionRecord | None = None
+        self._last_error: str | None = None
+        self._last_task: Path | None = None
+        self._last_rdf: Path | None = None
+        self._last_verbs_dir: Path | None = None
+
+        self._watchdog_thread: threading.Thread | None = None
+        self._watchdog_stop = threading.Event()
+
+    # ------------------------------------------------------------------
+    # Events
+    # ------------------------------------------------------------------
+
+    def add_listener(self, callback: Callable[[SessionEvent], None]) -> None:
+        """Register an event listener. Thread-safe."""
+        with self._lock:
+            self._listeners.append(callback)
+
+    def remove_listener(self, callback: Callable[[SessionEvent], None]) -> None:
+        """Unregister an event listener. Thread-safe."""
+        with self._lock:
+            self._listeners = [cb for cb in self._listeners if cb != callback]
+
+    def _emit(
+        self,
+        category: str,
+        message: str,
+        suggestion: str | None = None,
+        detail: dict[str, Any] | None = None,
+    ) -> None:
+        """Create and dispatch a SessionEvent to all listeners."""
+        event = SessionEvent(
+            timestamp=datetime.now(timezone.utc),
+            category=category,  # type: ignore[arg-type]
+            message=message,
+            suggestion=suggestion,
+            detail=detail,
+        )
+        with self._lock:
+            listeners = list(self._listeners)
+        for cb in listeners:
+            try:
+                cb(event)
+            except Exception:
+                pass  # never let a listener crash the session
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    def connect(self) -> None:
+        """Start target (if needed), connect transport, start watchdog."""
+        with self._lock:
+            self._connection_status = ConnectionStatus.CONNECTING
+        self._emit("connection", "Connecting...")
+
+        if self._target.requires_launch:
+            self._emit("connection", "Starting backend...")
+            self._target.start()
+
+        self._connect_with_retries()
+
+        self._transport.subscribe_reports(self._on_report)
+        with self._lock:
+            self._connection_status = ConnectionStatus.CONNECTED
+
+        with self._lock:
+            self._snapshot.robot.current = RobotStatus.IDLE
+            self._store.save(self._snapshot)
+
+        self._emit("connection", "Connected")
+        self._start_watchdog()
+
+    def disconnect(self) -> None:
+        """Stop watchdog, disconnect transport, update state."""
+        self._stop_watchdog()
+        try:
+            self._transport.disconnect()
+        except Exception:
+            pass
+        with self._lock:
+            self._connection_status = ConnectionStatus.DISCONNECTED
+
+        with self._lock:
+            self._snapshot.robot.current = RobotStatus.OFFLINE
+            self._store.save(self._snapshot)
+
+        self._emit("connection", "Disconnected")
+
+    def _connect_with_retries(self) -> None:
+        """Connect transport with retries (ported from Orchestrator)."""
+        from defined_cli.errors import TransportConnectionError
+
+        last_error: TransportConnectionError | None = None
+        for attempt in range(_CONNECT_RETRIES):
+            try:
+                self._transport.connect()
+                return
+            except TransportConnectionError as exc:
+                last_error = exc
+                if attempt < _CONNECT_RETRIES - 1:
+                    self._emit(
+                        "connection",
+                        f"Retry {attempt + 1}/{_CONNECT_RETRIES}...",
+                        suggestion=f"Waiting {_CONNECT_DELAY}s before next attempt",
+                    )
+                    time.sleep(_CONNECT_DELAY)
+        raise last_error  # type: ignore[misc]
+
+    # ------------------------------------------------------------------
+    # Reconnect watchdog
+    # ------------------------------------------------------------------
+
+    def _start_watchdog(self) -> None:
+        """Start background reconnect watchdog."""
+        self._watchdog_stop.clear()
+        self._watchdog_thread = threading.Thread(
+            target=self._watchdog_loop, daemon=True,
+        )
+        self._watchdog_thread.start()
+
+    def _stop_watchdog(self) -> None:
+        """Stop the reconnect watchdog."""
+        self._watchdog_stop.set()
+        if self._watchdog_thread is not None:
+            self._watchdog_thread.join(timeout=5.0)
+            self._watchdog_thread = None
+
+    def _watchdog_loop(self) -> None:
+        """Background loop: check connection, reconnect if dropped."""
+        backoff = _RECONNECT_INTERVAL
+        while not self._watchdog_stop.is_set():
+            self._watchdog_stop.wait(timeout=backoff)
+            if self._watchdog_stop.is_set():
+                break
+            if not self._transport.is_connected:
+                with self._lock:
+                    self._connection_status = ConnectionStatus.RECONNECTING
+                self._emit("connection", "Connection lost, reconnecting...")
+                try:
+                    self._transport.connect()
+                    with self._lock:
+                        self._connection_status = ConnectionStatus.CONNECTED
+                    self._emit("connection", "Reconnected")
+                    backoff = _RECONNECT_INTERVAL
+                except Exception:
+                    backoff = min(backoff * 2, _RECONNECT_MAX_BACKOFF)
+                    self._emit(
+                        "connection",
+                        f"Reconnect failed, retrying in {backoff:.0f}s",
+                    )
+
+    # ------------------------------------------------------------------
+    # Compile (standalone, no transport needed)
+    # ------------------------------------------------------------------
+
+    def compile(
+        self,
+        task: Path,
+        rdf: Path,
+        *,
+        verbs_dir: Path | None = None,
+    ) -> CompileResult:
+        """Compile a task YAML to BT XML. Works without connection."""
+        return self._compile_fn(task, rdf, verbs_dir, None)
+
+    # ------------------------------------------------------------------
+    # Mission execution
+    # ------------------------------------------------------------------
+
+    def run_mission(
+        self,
+        task: Path,
+        rdf: Path,
+        *,
+        verbs_dir: Path | None = None,
+        timeout: float = _DEFAULT_TIMEOUT,
+    ) -> None:
+        """Compile, deploy, and monitor a mission. Non-blocking.
+
+        Spawns a daemon thread. Use ``mission_status`` property to
+        track progress. Events are emitted to listeners.
+        """
+        with self._lock:
+            if self._mission_status in (
+                MissionStatus.COMPILING,
+                MissionStatus.DEPLOYING,
+                MissionStatus.RUNNING,
+            ):
+                raise RuntimeError("A mission is already running. Use stop_mission() first.")
+            self._last_task = task
+            self._last_rdf = rdf
+            self._last_verbs_dir = verbs_dir
+
+        thread = threading.Thread(
+            target=self._run_mission_thread,
+            args=(task, rdf, verbs_dir, timeout),
+            daemon=True,
+        )
+        thread.start()
+
+    def stop_mission(self) -> None:
+        """Stop the current mission. No-op if nothing running."""
+        self._stop_event.set()
+        self._done_event.set()
+        with self._lock:
+            was_running = self._mission_status == MissionStatus.RUNNING
+        if was_running:
+            self._emit("mission", "Mission stopped by user")
+
+    def restart_mission(self) -> None:
+        """Re-run the last mission with the same arguments."""
+        with self._lock:
+            task = self._last_task
+            rdf = self._last_rdf
+            verbs_dir = self._last_verbs_dir
+        if task is None or rdf is None:
+            msg = "No previous mission to restart"
+            raise RuntimeError(msg)
+        self.run_mission(task, rdf, verbs_dir=verbs_dir)
+
+    def _run_mission_thread(
+        self,
+        task_yaml: Path,
+        rdf_yaml: Path,
+        verbs_dir: Path | None,
+        timeout: float,
+    ) -> None:
+        """Mission worker — runs in a daemon thread."""
+        self._stop_event.clear()
+        self._done_event.clear()
+
+        ts = datetime.now(timezone.utc).strftime("%H%M%S")
+        task_base = task_yaml.name.split(".")[0]
+        mission_id = f"{task_base}-{ts}"
+
+        record = MissionRecord(
+            id=mission_id,
+            task_name=task_base,
+            status="RUNNING",
+            started_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+        with self._lock:
+            self._current_mission = record
+            self._mission_status = MissionStatus.COMPILING
+            self._step_progress = None
+            self._last_error = None
+            self._snapshot.robot.current = RobotStatus.ON_MISSION
+            self._snapshot.robot.last_mission_id = mission_id
+            self._store.save(self._snapshot)
+
+        self._emit("mission", f"Mission {mission_id} started")
+
+        outcome = "FAILURE"
+        try:
+            # Compile phase
+            self._emit("mission", f"Compiling {task_yaml.name}...")
+
+            # Resolve POI references
+            task_dict = yaml.safe_load(task_yaml.read_text())
+            with self._lock:
+                pois = dict(self._snapshot.world.pois)
+            bb = Blackboard(data={"world": {"pois": pois}})
+            resolved_dict = resolve_references(task_dict, bb)
+
+            if resolved_dict != task_dict:
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".yaml", dir=task_yaml.parent,
+                    delete=False, prefix=f".{task_yaml.stem}_resolved_",
+                ) as tmp:
+                    yaml.dump(resolved_dict, tmp)
+                    resolved_path = Path(tmp.name)
+                try:
+                    result = self._compile_fn(resolved_path, rdf_yaml, verbs_dir, None)
+                finally:
+                    resolved_path.unlink(missing_ok=True)
+            else:
+                result = self._compile_fn(task_yaml, rdf_yaml, verbs_dir, None)
+
+            with self._lock:
+                self._steps = list(result.steps)
+                self._mission_status = MissionStatus.DEPLOYING
+
+            self._emit(
+                "mission",
+                f"Compiled {len(result.steps)} steps",
+                detail={"steps": [s.label for s in result.steps]},
+            )
+
+            if self._stop_event.is_set():
+                outcome = "ABORTED"
+                return
+
+            # Deploy phase
+            self._emit("mission", "Waiting for executor...")
+            self._transport.wait_for_executor(timeout=60.0)
+
+            xml_path_str = self._target.resolve_xml_path(result.xml_path)
+
+            self._transport.subscribe_status(self._on_progress)
+            self._transport.send_task(xml_path_str)
+
+            with self._lock:
+                self._mission_status = MissionStatus.RUNNING
+
+            self._emit("mission", "Deployed, monitoring execution...")
+
+            # Monitor phase
+            self._done_event.wait(timeout=timeout)
+
+            if self._stop_event.is_set():
+                outcome = "ABORTED"
+                return
+
+            final = self._step_progress
+            if final and final.status == "SUCCESS":
+                outcome = "SUCCESS"
+            elif not self._done_event.is_set():
+                outcome = "TIMEOUT"
+                self._emit(
+                    "error",
+                    f"Mission timed out after {timeout}s",
+                    suggestion="Increase timeout or check if robot is stuck",
+                )
+            else:
+                outcome = "FAILURE"
+
+        except ResolverError as exc:
+            with self._lock:
+                self._last_error = str(exc)
+            self._emit(
+                "error",
+                f"POI resolution failed: {exc}",
+                suggestion="Check POI names with /world list",
+            )
+        except Exception as exc:
+            with self._lock:
+                self._last_error = str(exc)
+            self._emit(
+                "error",
+                f"Mission failed: {exc}",
+                detail={"exception": type(exc).__name__, "message": str(exc)},
+            )
+        finally:
+            with self._lock:
+                record.status = outcome
+                record.completed_at = datetime.now(timezone.utc).isoformat()
+                record.result = outcome
+                self._snapshot.mission_history.append(record)
+                self._snapshot.robot.current = RobotStatus.IDLE
+                self._snapshot.robot.last_mission_result = outcome
+                self._current_mission = record
+                self._mission_status = (
+                    MissionStatus.SUCCEEDED if outcome == "SUCCESS"
+                    else MissionStatus.FAILED
+                )
+                self._store.save(self._snapshot)
+
+            self._emit("mission", f"Mission {outcome.lower()}: {mission_id}")
+
+    def _on_progress(self, progress: TaskProgress) -> None:
+        """Handle TaskProgress from transport. Called from Twisted thread."""
+        with self._lock:
+            if progress.status == "IDLE":
+                return
+            self._step_progress = progress
+        if progress.status in ("SUCCESS", "FAILURE"):
+            self._done_event.set()
+        self._emit(
+            "executor",
+            f"Step {progress.current}/{progress.total}: {progress.step} ({progress.status})",
+            detail={
+                "step": progress.step,
+                "status": progress.status,
+                "current": progress.current,
+                "total": progress.total,
+                "progress": progress.progress,
+            },
+        )
+
+    def _on_report(self, message: str) -> None:
+        """Handle report from /task_reports."""
+        with self._lock:
+            self._reports.append(message)
+        self._emit("mission", f"Report: {message}")
+
+    # ------------------------------------------------------------------
+    # World management
+    # ------------------------------------------------------------------
+
+    def add_poi(
+        self,
+        name: str,
+        x: float,
+        y: float,
+        *,
+        poi_type: str = "static",
+        radius: float = 0.5,
+    ) -> None:
+        """Add or update a Point of Interest."""
+        with self._lock:
+            bb = Blackboard(data={"world": {"pois": self._snapshot.world.pois}})
+            bb.set_poi(name, (x, y), radius=radius, poi_type=poi_type)
+            self._snapshot.world.pois = bb.list_pois()
+            self._store.save(self._snapshot)
+
+    def list_pois(self) -> dict[str, dict]:
+        """Return all POIs as a dict."""
+        with self._lock:
+            return dict(self._snapshot.world.pois)
+
+    def mark_poi(self, name: str, *, poi_type: str = "static", radius: float = 0.5) -> tuple[float, float]:
+        """Mark the robot's current position as a named POI."""
+        from defined_cli.transport.pose import fetch_robot_pose
+
+        x, y = fetch_robot_pose()
+        self.add_poi(name, x, y, poi_type=poi_type, radius=radius)
+        return (x, y)
+
+    # ------------------------------------------------------------------
+    # Read-only properties (all thread-safe)
+    # ------------------------------------------------------------------
+
+    @property
+    def connection_status(self) -> ConnectionStatus:
+        """Current transport connection state."""
+        with self._lock:
+            return self._connection_status
+
+    @property
+    def mission_status(self) -> MissionStatus:
+        """Current mission execution state."""
+        with self._lock:
+            return self._mission_status
+
+    @property
+    def state(self) -> StateSnapshot:
+        """Current state snapshot (read-only copy)."""
+        with self._lock:
+            return StateSnapshot.from_dict(self._snapshot.to_dict())
+
+    @property
+    def blackboard(self) -> Blackboard:
+        """Blackboard with current world state."""
+        with self._lock:
+            return Blackboard(data={"world": {"pois": dict(self._snapshot.world.pois)}})
+
+    @property
+    def current_progress(self) -> TaskProgress | None:
+        """Latest TaskProgress update, or None if idle."""
+        with self._lock:
+            return self._step_progress
+
+    @property
+    def last_mission(self) -> MissionRecord | None:
+        """Most recently completed or active mission record."""
+        with self._lock:
+            return self._current_mission
+
+    @property
+    def steps(self) -> list[StepInfo]:
+        """Steps from the most recently compiled mission."""
+        with self._lock:
+            return list(self._steps)
+
+    @property
+    def reports(self) -> list[str]:
+        """Recent report messages."""
+        with self._lock:
+            return list(self._reports)
+
+    @property
+    def last_error(self) -> str | None:
+        """Error from the most recent failed mission."""
+        with self._lock:
+            return self._last_error
