@@ -96,3 +96,64 @@ class TestMissingFields:
         )
         with pytest.raises(CompilationError, match="Missing required field"):
             compile_task(task_yaml=task, rdf_yaml=RDF_YAML)
+
+
+class TestParamOverrides:
+
+    def test_override_replaces_step_param_in_xml(self, tmp_path):
+        result = compile_task(
+            task_yaml=TASK_YAML,
+            rdf_yaml=RDF_YAML,
+            output_dir=tmp_path,
+            param_overrides={"timeout": "999"},
+        )
+        xml = result.xml_path.read_text()
+        assert 'timeout="999"' in xml
+
+    def test_override_does_not_affect_unrelated_steps(self, tmp_path):
+        result = compile_task(
+            task_yaml=TASK_YAML,
+            rdf_yaml=RDF_YAML,
+            output_dir=tmp_path,
+            param_overrides={"nonexistent_param": "42"},
+        )
+        # Compilation should succeed; unknown keys are silently ignored by Jinja2
+        assert result.xml_path.exists()
+
+    def test_override_applies_to_all_steps(self, tmp_path):
+        # patrol has two go_to steps — override should appear in both
+        result = compile_task(
+            task_yaml=TASK_YAML,
+            rdf_yaml=RDF_YAML,
+            output_dir=tmp_path,
+            param_overrides={"timeout": "777"},
+        )
+        xml = result.xml_path.read_text()
+        assert xml.count('timeout="777"') == 2
+
+    def test_none_overrides_is_same_as_no_overrides(self, tmp_path):
+        result_plain = compile_task(
+            task_yaml=TASK_YAML,
+            rdf_yaml=RDF_YAML,
+            output_dir=tmp_path / "plain",
+        )
+        result_none = compile_task(
+            task_yaml=TASK_YAML,
+            rdf_yaml=RDF_YAML,
+            output_dir=tmp_path / "none",
+            param_overrides=None,
+        )
+        assert result_plain.xml_path.read_text() == result_none.xml_path.read_text()
+
+    def test_override_takes_precedence_over_yaml_default(self, tmp_path):
+        # patrol.task.yaml has no explicit timeout, so it uses the verb template default
+        # An override should replace that default in the emitted XML
+        result = compile_task(
+            task_yaml=TASK_YAML,
+            rdf_yaml=RDF_YAML,
+            output_dir=tmp_path,
+            param_overrides={"timeout": "42"},
+        )
+        xml = result.xml_path.read_text()
+        assert 'timeout="42"' in xml
+        assert 'timeout="60.0"' not in xml  # original default

@@ -92,6 +92,7 @@ class DefinedSession:
         self._last_task: Path | None = None
         self._last_rdf: Path | None = None
         self._last_verbs_dir: Path | None = None
+        self._last_param_overrides: dict | None = None
 
         self._watchdog_thread: threading.Thread | None = None
         self._watchdog_stop = threading.Event()
@@ -264,11 +265,17 @@ class DefinedSession:
         *,
         verbs_dir: Path | None = None,
         timeout: float = _DEFAULT_TIMEOUT,
+        param_overrides: dict | None = None,
     ) -> None:
         """Compile, deploy, and monitor a mission. Non-blocking.
 
         Spawns a daemon thread. Use ``mission_status`` property to
         track progress. Events are emitted to listeners.
+
+        Args:
+            param_overrides: Key/value pairs that override matching params in
+                every task step at compile time. E.g. ``{"timeout": "120"}``
+                overrides the ``timeout`` param on any step that declares it.
         """
         with self._lock:
             if self._mission_status in (
@@ -280,10 +287,11 @@ class DefinedSession:
             self._last_task = task
             self._last_rdf = rdf
             self._last_verbs_dir = verbs_dir
+            self._last_param_overrides = param_overrides
 
         thread = threading.Thread(
             target=self._run_mission_thread,
-            args=(task, rdf, verbs_dir, timeout),
+            args=(task, rdf, verbs_dir, timeout, param_overrides),
             daemon=True,
         )
         thread.start()
@@ -303,10 +311,11 @@ class DefinedSession:
             task = self._last_task
             rdf = self._last_rdf
             verbs_dir = self._last_verbs_dir
+            param_overrides = self._last_param_overrides
         if task is None or rdf is None:
             msg = "No previous mission to restart"
             raise RuntimeError(msg)
-        self.run_mission(task, rdf, verbs_dir=verbs_dir)
+        self.run_mission(task, rdf, verbs_dir=verbs_dir, param_overrides=param_overrides)
 
     def _run_mission_thread(
         self,
@@ -314,6 +323,7 @@ class DefinedSession:
         rdf_yaml: Path,
         verbs_dir: Path | None,
         timeout: float,
+        param_overrides: dict | None = None,
     ) -> None:
         """Mission worker — runs in a daemon thread."""
         self._stop_event.clear()
@@ -361,11 +371,17 @@ class DefinedSession:
                     yaml.dump(resolved_dict, tmp)
                     resolved_path = Path(tmp.name)
                 try:
-                    result = self._compile_fn(resolved_path, rdf_yaml, verbs_dir, None)
+                    result = self._compile_fn(
+                        resolved_path, rdf_yaml, verbs_dir, None,
+                        param_overrides=param_overrides,
+                    )
                 finally:
                     resolved_path.unlink(missing_ok=True)
             else:
-                result = self._compile_fn(task_yaml, rdf_yaml, verbs_dir, None)
+                result = self._compile_fn(
+                    task_yaml, rdf_yaml, verbs_dir, None,
+                    param_overrides=param_overrides,
+                )
 
             with self._lock:
                 self._steps = list(result.steps)
@@ -558,6 +574,37 @@ class DefinedSession:
         """Recent report messages."""
         with self._lock:
             return list(self._reports)
+
+    def publish_velocity(self, linear_x: float, angular_z: float) -> None:
+        """Publish a velocity command to /cmd_vel. No-op if not connected."""
+        self._transport.publish_velocity(linear_x, angular_z)
+
+    def emergency_stop(self) -> None:
+        """Immediately halt all motion and abort any running mission.
+
+        Publishes zero velocity to /cmd_vel, signals the mission thread to
+        stop, and marks the mission as FAILED. Safe to call from any state.
+        """
+        # Send zero-velocity first — hardware safety before anything else
+        self._transport.publish_velocity(0.0, 0.0)
+
+        # Signal the mission thread to abort
+        self._stop_event.set()
+        self._done_event.set()
+
+        with self._lock:
+            if self._mission_status in (
+                MissionStatus.COMPILING,
+                MissionStatus.DEPLOYING,
+                MissionStatus.RUNNING,
+            ):
+                self._mission_status = MissionStatus.FAILED
+
+        self._emit(
+            "mission",
+            "Emergency stop activated",
+            suggestion="Verify robot is stationary before resuming",
+        )
 
     @property
     def last_error(self) -> str | None:

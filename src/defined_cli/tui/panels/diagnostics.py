@@ -62,5 +62,5 @@ class DiagnosticsPanel(Static):
                     lines.append(f"  [dim]{k}: {v}[/dim]")
 
         level_label = {1: "Summary", 2: "Suggestions", 3: "Advanced"}.get(self._detail_level, "")
-        lines.append(f"\n[dim]Detail: {level_label} (d/D to change)[/dim]")
+        lines.append(f"\n[dim]Detail: {level_label} (/detail to cycle)[/dim]")
         return "\n".join(lines)

@@ -252,6 +252,68 @@ class TestSessionMission:
         session.disconnect()
 
 
+class TestPublishVelocity:
+
+    def test_delegates_to_transport(self, session, mock_transport):
+        session.publish_velocity(0.2, -0.5)
+        mock_transport.publish_velocity.assert_called_once_with(0.2, -0.5)
+
+    def test_zero_velocity(self, session, mock_transport):
+        session.publish_velocity(0.0, 0.0)
+        mock_transport.publish_velocity.assert_called_once_with(0.0, 0.0)
+
+    def test_no_crash_when_disconnected(self, session, mock_transport):
+        mock_transport.publish_velocity.return_value = None
+        session.publish_velocity(0.1, 0.0)  # should not raise
+
+
+class TestEmergencyStop:
+
+    def _make_running_mission(self, session, mock_transport, tmp_path):
+        """Start a mission that never completes (transport never calls back)."""
+        mock_transport.wait_for_executor.return_value = True
+        mock_transport.subscribe_status.side_effect = lambda cb: None
+        task = tmp_path / "test.task.yaml"
+        task.write_text("name: Test\nsteps:\n  - verb: wait\n    params:\n      duration: 1\n")
+        rdf = tmp_path / "robot.rdf.yaml"
+        rdf.write_text("name: bot\n")
+        session.run_mission(task, rdf)
+        time.sleep(0.4)
+
+    def test_publishes_zero_velocity(self, session, mock_transport):
+        session.emergency_stop()
+        mock_transport.publish_velocity.assert_called_once_with(0.0, 0.0)
+
+    def test_no_crash_when_idle(self, session):
+        session.connect()
+        session.emergency_stop()  # must not raise
+        session.disconnect()
+
+    def test_stops_running_mission(self, session, mock_transport, tmp_path):
+        session.connect()
+        self._make_running_mission(session, mock_transport, tmp_path)
+        assert session.mission_status == MissionStatus.RUNNING
+
+        session.emergency_stop()
+        time.sleep(0.3)
+
+        assert session.mission_status in (MissionStatus.FAILED, MissionStatus.IDLE)
+        session.disconnect()
+
+    def test_emits_emergency_stop_event(self, session):
+        events = []
+        session.add_listener(events.append)
+        session.emergency_stop()
+        assert any("emergency" in e.message.lower() for e in events)
+
+    def test_sets_mission_status_to_failed_when_running(self, session, mock_transport, tmp_path):
+        session.connect()
+        self._make_running_mission(session, mock_transport, tmp_path)
+        session.emergency_stop()
+        time.sleep(0.3)
+        assert session.mission_status == MissionStatus.FAILED
+        session.disconnect()
+
 class TestSessionWorld:
 
     def test_add_poi(self, session):
@@ -298,3 +360,86 @@ class TestSessionProperties:
 
     def test_last_error_initially_none(self, session):
         assert session.last_error is None
+
+
+class TestSessionParamOverrides:
+    """run_mission passes param_overrides to compile_fn and persists them for restart."""
+
+    def _make_task(self, tmp_path):
+        task = tmp_path / "test.task.yaml"
+        task.write_text("name: Test\nsteps:\n  - verb: wait\n    params:\n      duration: 1\n")
+        rdf = tmp_path / "robot.rdf.yaml"
+        rdf.write_text("name: bot\n")
+        return task, rdf
+
+    def test_param_overrides_forwarded_to_compile_fn(self, session, mock_compile_fn, mock_transport, tmp_path):
+        session.connect()
+        mock_transport.wait_for_executor.return_value = True
+        mock_transport.subscribe_status.side_effect = lambda cb: None
+
+        task, rdf = self._make_task(tmp_path)
+        session.run_mission(task, rdf, param_overrides={"timeout": "99"})
+        time.sleep(0.3)
+
+        _, kwargs = mock_compile_fn.call_args
+        assert kwargs.get("param_overrides") == {"timeout": "99"}
+
+        session.stop_mission()
+        session.disconnect()
+
+    def test_no_overrides_passes_none_to_compile_fn(self, session, mock_compile_fn, mock_transport, tmp_path):
+        session.connect()
+        mock_transport.wait_for_executor.return_value = True
+        mock_transport.subscribe_status.side_effect = lambda cb: None
+
+        task, rdf = self._make_task(tmp_path)
+        session.run_mission(task, rdf)
+        time.sleep(0.3)
+
+        _, kwargs = mock_compile_fn.call_args
+        assert kwargs.get("param_overrides") is None
+
+        session.stop_mission()
+        session.disconnect()
+
+    def test_overrides_stored_for_restart(self, session, mock_compile_fn, mock_transport, tmp_path):
+        session.connect()
+        mock_transport.wait_for_executor.return_value = True
+        mock_transport.subscribe_status.side_effect = lambda cb: None
+
+        task, rdf = self._make_task(tmp_path)
+        session.run_mission(task, rdf, param_overrides={"timeout": "55"})
+        time.sleep(0.3)
+        session.stop_mission()
+        time.sleep(0.1)
+
+        mock_compile_fn.reset_mock()
+        session.restart_mission()
+        time.sleep(0.3)
+
+        _, kwargs = mock_compile_fn.call_args
+        assert kwargs.get("param_overrides") == {"timeout": "55"}
+
+        session.stop_mission()
+        session.disconnect()
+
+    def test_restart_without_overrides_passes_none(self, session, mock_compile_fn, mock_transport, tmp_path):
+        session.connect()
+        mock_transport.wait_for_executor.return_value = True
+        mock_transport.subscribe_status.side_effect = lambda cb: None
+
+        task, rdf = self._make_task(tmp_path)
+        session.run_mission(task, rdf)
+        time.sleep(0.3)
+        session.stop_mission()
+        time.sleep(0.1)
+
+        mock_compile_fn.reset_mock()
+        session.restart_mission()
+        time.sleep(0.3)
+
+        _, kwargs = mock_compile_fn.call_args
+        assert kwargs.get("param_overrides") is None
+
+        session.stop_mission()
+        session.disconnect()

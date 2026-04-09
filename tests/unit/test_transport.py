@@ -197,3 +197,57 @@ class TestWaitReady:
 
     def test_returns_false_when_not_connected(self, transport):
         assert transport.wait_ready(timeout=1.0) is False
+
+
+class TestPublishVelocity:
+
+    def test_noop_when_not_connected(self, transport):
+        # Should not raise even when disconnected
+        transport.publish_velocity(0.2, 0.5)
+
+    @patch("defined_cli.transport.rosbridge.roslibpy.Topic")
+    @patch("defined_cli.transport.rosbridge.roslibpy.Ros")
+    @patch("defined_cli.transport.rosbridge._get_reactor")
+    def test_publishes_to_cmd_vel_topic(self, mock_get_reactor, MockRos, MockTopic, transport):
+        mock_reactor = MagicMock()
+        mock_reactor.callFromThread.side_effect = lambda fn, *a, **kw: fn(*a, **kw)
+        mock_get_reactor.return_value = mock_reactor
+        _patch_connect(MockRos.return_value)
+        transport.connect()
+
+        transport.publish_velocity(0.2, 0.5)
+
+        MockTopic.assert_called_with(MockRos.return_value, "/cmd_vel", "geometry_msgs/Twist")
+        MockTopic.return_value.publish.assert_called_once()
+
+    @patch("defined_cli.transport.rosbridge.roslibpy.Topic")
+    @patch("defined_cli.transport.rosbridge.roslibpy.Ros")
+    @patch("defined_cli.transport.rosbridge._get_reactor")
+    def test_message_has_correct_linear_and_angular(self, mock_get_reactor, MockRos, MockTopic, transport):
+        mock_reactor = MagicMock()
+        mock_reactor.callFromThread.side_effect = lambda fn, *a, **kw: fn(*a, **kw)
+        mock_get_reactor.return_value = mock_reactor
+        _patch_connect(MockRos.return_value)
+        transport.connect()
+
+        transport.publish_velocity(0.2, -0.5)
+
+        _, call_args, _ = MockTopic.return_value.publish.mock_calls[0]
+        msg = call_args[0]
+        assert msg.data["linear"]["x"] == pytest.approx(0.2)
+        assert msg.data["linear"]["y"] == pytest.approx(0.0)
+        assert msg.data["linear"]["z"] == pytest.approx(0.0)
+        assert msg.data["angular"]["z"] == pytest.approx(-0.5)
+
+    @patch("defined_cli.transport.rosbridge.roslibpy.Topic")
+    @patch("defined_cli.transport.rosbridge.roslibpy.Ros")
+    @patch("defined_cli.transport.rosbridge._get_reactor")
+    def test_zero_velocity_is_valid(self, mock_get_reactor, MockRos, MockTopic, transport):
+        mock_reactor = MagicMock()
+        mock_reactor.callFromThread.side_effect = lambda fn, *a, **kw: fn(*a, **kw)
+        mock_get_reactor.return_value = mock_reactor
+        _patch_connect(MockRos.return_value)
+        transport.connect()
+
+        transport.publish_velocity(0.0, 0.0)
+        MockTopic.return_value.publish.assert_called_once()

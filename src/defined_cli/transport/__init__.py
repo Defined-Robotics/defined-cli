@@ -65,6 +65,12 @@ class TransportBase(ABC):
         """
         return True
 
+    def publish_velocity(self, linear_x: float, angular_z: float) -> None:
+        """Publish a velocity command to /cmd_vel.
+
+        Default is a no-op for backends that don't support velocity control.
+        """
+
     @property
     def is_connected(self) -> bool:
         """True if currently connected. Subclasses should override."""

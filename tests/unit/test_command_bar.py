@@ -75,3 +75,67 @@ class TestParseCommand:
         cmd = parse_command("/world add dock -1.5 3.0")
         assert cmd.kind == CommandKind.WORLD_ADD
         assert cmd.args == ["dock", "-1.5", "3.0"]
+
+
+class TestRunWithParamOverrides:
+
+    def test_run_no_overrides_has_empty_kwargs(self):
+        cmd = parse_command("/run patrol")
+        assert cmd.kind == CommandKind.RUN
+        assert cmd.kwargs == {}
+
+    def test_run_single_override(self):
+        cmd = parse_command("/run explore timeout=100")
+        assert cmd.kind == CommandKind.RUN
+        assert cmd.args == ["explore"]
+        assert cmd.kwargs == {"timeout": "100"}
+
+    def test_run_multiple_overrides(self):
+        cmd = parse_command("/run patrol timeout=30 retries=5")
+        assert cmd.kind == CommandKind.RUN
+        assert cmd.args == ["patrol"]
+        assert cmd.kwargs == {"timeout": "30", "retries": "5"}
+
+    def test_run_float_override(self):
+        cmd = parse_command("/run explore timeout=120.5")
+        assert cmd.kwargs == {"timeout": "120.5"}
+
+    def test_run_override_with_spaces_around_equals(self):
+        # partition("=") handles this: "timeout = 100" → k="timeout ", v=" 100"
+        # both are stripped
+        cmd = parse_command("/run explore timeout=100")
+        assert cmd.kwargs["timeout"] == "100"
+
+    def test_run_positional_arg_without_equals_is_error(self):
+        cmd = parse_command("/run explore 100")
+        assert cmd.kind == CommandKind.UNKNOWN
+        assert "key=value" in cmd.error
+
+    def test_run_no_task_name_is_error(self):
+        cmd = parse_command("/run")
+        assert cmd.kind == CommandKind.UNKNOWN
+        assert "Usage" in cmd.error
+
+    def test_run_override_does_not_affect_args(self):
+        cmd = parse_command("/run patrol timeout=60 stale_threshold=20")
+        assert cmd.args == ["patrol"]
+        assert len(cmd.kwargs) == 2
+
+
+class TestNewCommands:
+
+    def test_detail_parses(self):
+        cmd = parse_command("/detail")
+        assert cmd.kind == CommandKind.DETAIL
+
+    def test_teleop_parses(self):
+        cmd = parse_command("/teleop")
+        assert cmd.kind == CommandKind.TELEOP
+
+    def test_estop_parses(self):
+        cmd = parse_command("/estop")
+        assert cmd.kind == CommandKind.ESTOP
+
+    def test_estop_alias_double_bang(self):
+        cmd = parse_command("!!")
+        assert cmd.kind == CommandKind.ESTOP

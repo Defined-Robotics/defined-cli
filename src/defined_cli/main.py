@@ -91,12 +91,8 @@ def _launch_tui(
         compile_fn=compile_task,
     )
 
-    try:
-        session.connect()
-    except Exception:
-        # TUI will show disconnected state — don't crash
-        pass
-
+    # Don't block on connect — TUI will appear immediately and
+    # show "Disconnected" until the background connect succeeds.
     try:
         app = DefinedApp(session, rdf=rdf)
         app.run()

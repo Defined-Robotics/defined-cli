@@ -18,7 +18,11 @@ _reactor_ref: object | None = None  # holds the Twisted reactor once started
 
 
 def _get_reactor() -> object:
-    """Start the Twisted reactor thread once and return it."""
+    """Start the Twisted reactor thread once and return it.
+
+    Blocks until the reactor event loop is actually running so that
+    subsequent ``callFromThread`` calls are guaranteed to be processed.
+    """
     global _reactor_ref
     with _reactor_lock:
         if _reactor_ref is not None:
@@ -27,6 +31,12 @@ def _get_reactor() -> object:
 
         thread = threading.Thread(target=reactor.run, args=(False,), daemon=True)
         thread.start()
+        # Wait until the event loop is actually processing callbacks.
+        # Polling reactor.running avoids a callWhenRunning race and keeps
+        # the lock-hold time minimal.
+        deadline = time.monotonic() + 5.0
+        while not reactor.running and time.monotonic() < deadline:
+            time.sleep(0.01)
         _reactor_ref = reactor
         return reactor
 
@@ -163,6 +173,18 @@ class RosbridgeTransport(TransportBase):
         except Exception:
             pass
         return result
+
+    def publish_velocity(self, linear_x: float, angular_z: float) -> None:
+        if self._ros is None or not self._ros.is_connected:
+            return
+        topic = roslibpy.Topic(self._ros, "/cmd_vel", "geometry_msgs/Twist")
+        self._reactor.callFromThread(
+            topic.publish,
+            roslibpy.Message({
+                "linear": {"x": float(linear_x), "y": 0.0, "z": 0.0},
+                "angular": {"x": 0.0, "y": 0.0, "z": float(angular_z)},
+            }),
+        )
 
     def wait_ready(self, timeout: float = 60.0) -> bool:
         """Wait for Nav2 to be ready by checking for the navigate_to_pose action topics.

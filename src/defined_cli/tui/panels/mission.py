@@ -35,15 +35,20 @@ class MissionPanel(Static):
             lines.append(f"[bold cyan]{self._task_name}[/bold cyan]")
             lines.append("")
 
+        is_running = any(s == "RUNNING" for _, _, s in self._steps)
+
         for icon, label, status in self._steps:
             color = {"RUNNING": "cyan", "SUCCESS": "green", "FAILURE": "red"}.get(status, "dim")
             lines.append(f"[{color}]{icon} {label}[/{color}]")
 
-        # Progress bar
-        if self._progress > 0:
+        # Progress indicator
+        lines.append("")
+        if is_running and self._progress == 0:
+            # Long-running step with no % feedback (e.g. explore) — show spinner
+            lines.append("[cyan]⟳ Running...[/cyan]")
+        elif self._progress > 0:
             filled = self._progress // 5
             bar = "▓" * filled + "░" * (20 - filled)
-            lines.append("")
             lines.append(f"[cyan]{bar} {self._progress}%[/cyan]")
 
         return "\n".join(lines)
