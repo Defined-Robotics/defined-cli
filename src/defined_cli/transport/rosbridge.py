@@ -174,6 +174,58 @@ class RosbridgeTransport(TransportBase):
             pass
         return result
 
+    def fetch_pose(self, timeout: float = 5.0, topic: str = "/odom") -> tuple[float, float]:
+        """Fetch robot (x, y) using the existing rosbridge connection.
+
+        Default topic is ``/odom`` (nav_msgs/Odometry) which is always
+        published by the diff_drive controller. Also supports
+        ``/amcl_pose`` (PoseWithCovarianceStamped) and other pose topics.
+        """
+        if self._ros is None or not self._ros.is_connected:
+            raise ConnectionError("Not connected to rosbridge")
+
+        result: dict = {}
+        got_pose = threading.Event()
+
+        def _on_message(msg: dict) -> None:
+            try:
+                # nav_msgs/Odometry: msg.pose.pose.position
+                if "pose" in msg and "pose" in msg["pose"]:
+                    pos = msg["pose"]["pose"]["position"]
+                # geometry_msgs/PoseStamped: msg.pose.position
+                elif "pose" in msg and "position" in msg["pose"]:
+                    pos = msg["pose"]["position"]
+                else:
+                    pos = msg.get("position", msg)
+                result["x"] = pos["x"]
+                result["y"] = pos["y"]
+                got_pose.set()
+            except (KeyError, TypeError):
+                pass
+
+        msg_type = {
+            "/odom": "nav_msgs/Odometry",
+            "/amcl_pose": "geometry_msgs/PoseWithCovarianceStamped",
+        }.get(topic, "nav_msgs/Odometry")
+        pose_topic = roslibpy.Topic(self._ros, topic, msg_type)
+        self._reactor.callFromThread(pose_topic.subscribe, _on_message)
+
+        if not got_pose.wait(timeout=timeout):
+            try:
+                self._reactor.callFromThread(pose_topic.unsubscribe)
+            except Exception:
+                pass
+            raise TimeoutError(
+                f"No pose received on {topic} within {timeout}s. Is SLAM/AMCL running?"
+            )
+
+        try:
+            self._reactor.callFromThread(pose_topic.unsubscribe)
+        except Exception:
+            pass
+
+        return result["x"], result["y"]
+
     def publish_velocity(self, linear_x: float, angular_z: float) -> None:
         if self._ros is None or not self._ros.is_connected:
             return

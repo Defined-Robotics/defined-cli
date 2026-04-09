@@ -1,21 +1,26 @@
 """DefinedApp — unified Textual TUI for Defined Robotics.
 
-Full-screen app with command bar, three data panels (mission, world,
-diagnostics), and a status bar.  All business logic lives in
-``DefinedSession``; this module contains only rendering and input handling.
+Full-screen app with command bar, four data panels (mission, world,
+diagnostics, teleop), an activity log, and a status bar.  All business
+logic lives in ``DefinedSession``; this module contains only rendering
+and input handling.
 
 Layout
 ------
-┌──────────────────────────────────────────────────────┐
-│  status bar  (connection · task info · elapsed)      │
-├──────────────┬───────────────┬───────────────────────┤
-│   Mission    │     World     │     Diagnostics       │
-│   (steps,    │   (POI list)  │   (event log,         │
-│   progress)  │               │    detail levels)     │
-├──────────────┴───────────────┴───────────────────────┤
-│  feedback line  (one-line command output)            │
-│  command input  (slash commands)                     │
-└──────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│  RobotName   ● Connected   Task: patrol (▓▓▓░░ 60%)   2m31s │
+├────────────────────────────┬─────────────────────────────────┤
+│   MISSION                  │   DIAGNOSTICS                   │
+├────────────────────────────┼─────────────────────────────────┤
+│   WORLD                    │   TELEOP                        │
+├────────────────────────────┴─────────────────────────────────┤
+│  Activity Log (scrollable, timestamped)                       │
+├──────────────────────────────────────────────────────────────┤
+│  > /command input                                            │
+└──────────────────────────────────────────────────────────────┘
+
+Panels are discovered via ``PANEL_REGISTRY`` and receive data through
+``on_tick()`` (polled) and ``on_session_event()`` (pushed).
 
 Slash commands (type in command input)
 ---------------------------------------
@@ -35,6 +40,7 @@ Keyboard shortcuts
 Escape    Return focus to command input / exit teleop mode.
 Ctrl+E    Emergency stop (priority binding — works even while typing).
 Ctrl+Q    Quit.
+Tab       Cycle focus between panels.
 Arrow keys / Space  Move robot (teleop mode only).
 
 Usage:
@@ -47,7 +53,7 @@ from __future__ import annotations
 
 import glob
 import time
-import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -56,7 +62,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.events import Key
-from textual.widgets import Footer, Header, Input, Static
+from textual.widgets import Input, RichLog
 
 from defined_cli.mission.events import (
     ConnectionStatus,
@@ -64,6 +70,7 @@ from defined_cli.mission.events import (
     SessionEvent,
 )
 from defined_cli.tui.command_bar import CommandKind, parse_command
+from defined_cli.tui.panels.base import BasePanel
 from defined_cli.tui.panels.diagnostics import DiagnosticsPanel
 from defined_cli.tui.panels.mission import MissionPanel
 from defined_cli.tui.panels.status_bar import StatusBar
@@ -90,6 +97,7 @@ _HELP_TEXT = """\
   /quit                Exit
 
 [bold]Keyboard:[/bold]
+  Tab         Cycle focus between panels
   Escape      Focus command bar / exit teleop
   Ctrl+E      Emergency stop (works in any mode, even while typing)
   Ctrl+Q      Quit
@@ -113,43 +121,49 @@ class DefinedApp(App):
         padding: 0 1;
     }
 
-    #main-area {
+    #panel-grid {
         height: 1fr;
     }
 
-    #panel-mission {
-        width: 1fr;
-        border: solid $primary;
-        padding: 0 1;
+    .panel-row {
+        height: 1fr;
     }
 
-    #panel-world {
+    BasePanel {
         width: 1fr;
-        border: solid $accent;
+        height: 1fr;
+        border: solid $primary;
         padding: 0 1;
+        overflow-y: auto;
+    }
+
+    #panel-mission {
+        border: solid $primary;
     }
 
     #panel-diagnostics {
-        width: 1fr;
         border: solid $warning;
-        padding: 0 1;
+    }
+
+    #panel-world {
+        border: solid $accent;
     }
 
     #panel-teleop {
-        width: 1fr;
         border: solid $error;
-        padding: 0 1;
-        display: none;
     }
 
-    #panel-teleop.active {
-        display: block;
+    #panel-mission:focus,
+    #panel-diagnostics:focus,
+    #panel-world:focus,
+    #panel-teleop:focus {
+        border: heavy $accent;
     }
 
-    #feedback-line {
+    #activity-log {
         height: auto;
-        max-height: 14;
-        color: $text-muted;
+        max-height: 10;
+        border: solid $surface;
         padding: 0 1;
     }
 
@@ -174,26 +188,37 @@ class DefinedApp(App):
         self._teleop_mode = False
         self._teleop_stop_handle: object | None = None  # pending auto-stop timer
 
+        # Derive robot name from RDF filename
+        self._robot_name = rdf.stem.replace(".rdf", "") if rdf else "unknown"
+        self._last_activity_msg: str = ""  # dedup consecutive identical log lines
+        self._last_event_msg: str = ""  # dedup session events by message content
+
     def compose(self) -> ComposeResult:
         with Vertical():
             yield StatusBar(id="status-bar")
-            with Horizontal(id="main-area"):
-                yield MissionPanel(id="panel-mission")
-                yield WorldPanel(id="panel-world")
-                yield DiagnosticsPanel(id="panel-diagnostics")
-                yield TelePanel(id="panel-teleop")
-            yield Static("", id="feedback-line")
+            with Vertical(id="panel-grid"):
+                with Horizontal(classes="panel-row"):
+                    yield MissionPanel(id=MissionPanel.PANEL_ID)
+                    yield DiagnosticsPanel(id=DiagnosticsPanel.PANEL_ID)
+                with Horizontal(classes="panel-row"):
+                    yield WorldPanel(id=WorldPanel.PANEL_ID)
+                    yield TelePanel(id=TelePanel.PANEL_ID)
+            yield RichLog(id="activity-log", max_lines=100, markup=True)
             yield Input(placeholder="Type / for commands, /help for list", id="command-input")
 
     def on_mount(self) -> None:
         self._session.add_listener(self._on_session_event)
         self._refresh_timer = self.set_interval(0.25, self._tick)
-        # Show welcome if no mission history
+
+        # Set robot name on status bar
+        status_bar = self.query_one("#status-bar", StatusBar)
+        status_bar.robot_name = self._robot_name
+
+        # Welcome message
         if self._session.last_mission is None:
-            self._show_feedback(
+            self._log_activity(
                 "Welcome to Defined Robotics! Type /run <task> to start. /help for commands."
             )
-        self._update_world_panel()
         # Auto-focus the command input so users can type immediately
         self.query_one("#command-input", Input).focus()
         # Connect in the background so the TUI appears immediately
@@ -207,6 +232,24 @@ class DefinedApp(App):
         except Exception:
             pass  # status bar will show Disconnected
 
+
+    def on_tele_panel_focus_changed(self, event: TelePanel.FocusChanged) -> None:
+        """Auto-activate/deactivate teleop when TelePanel gains/loses focus."""
+        if event.gained and not self._teleop_mode:
+            self._teleop_mode = True
+            tele = self.query_one(f"#{TelePanel.PANEL_ID}", TelePanel)
+            tele.set_active(True)
+            self._log_activity(
+                "[yellow]Teleop ON — arrows=move, space=stop, Escape to exit[/yellow]",
+                dedup=True,
+            )
+        elif not event.gained and self._teleop_mode:
+            self._teleop_mode = False
+            tele = self.query_one(f"#{TelePanel.PANEL_ID}", TelePanel)
+            tele.set_active(False)
+            self._send_teleop_stop()
+            self._log_activity("Teleop OFF.", dedup=True)
+
     def on_unmount(self) -> None:
         self._session.remove_listener(self._on_session_event)
 
@@ -219,14 +262,25 @@ class DefinedApp(App):
         self.call_from_thread(self._handle_event, event)
 
     def _handle_event(self, event: SessionEvent) -> None:
-        diag = self.query_one("#panel-diagnostics", DiagnosticsPanel)
-        diag.add_event(event)
+        # Push to all panels
+        for panel in self.query(BasePanel):
+            panel.on_session_event(event)
 
-        if event.category == "executor":
-            self._update_mission_panel()
+        # Also log to activity log — dedup by message content (ignoring timestamp)
+        if event.message == self._last_event_msg:
+            return
+        self._last_event_msg = event.message
+        ts = event.timestamp.strftime("%H:%M:%S")
+        color = {
+            "connection": "blue",
+            "executor": "cyan",
+            "mission": "green",
+            "error": "red",
+        }.get(event.category, "white")
+        self._log_activity(f"[dim]{ts}[/dim]  [{color}]{event.message}[/{color}]")
 
     # ------------------------------------------------------------------
-    # Periodic tick — update status bar and mission panel
+    # Periodic tick — update status bar and panels
     # ------------------------------------------------------------------
 
     def _tick(self) -> None:
@@ -266,43 +320,9 @@ class DefinedApp(App):
         mins, secs = divmod(elapsed, 60)
         status_bar.elapsed = f"{mins}m{secs:02d}s"
 
-        # Update mission panel
-        self._update_mission_panel()
-
-    def _update_mission_panel(self) -> None:
-        panel = self.query_one("#panel-mission", MissionPanel)
-        steps = self._session.steps
-        progress = self._session.current_progress
-        last = self._session.last_mission
-
-        if not steps:
-            panel.clear_mission()
-            return
-
-        step_data = []
-        for i, step in enumerate(steps):
-            if progress is None:
-                icon, status = "○", "PENDING"
-            elif i < progress.current:
-                icon, status = "✓", "SUCCESS"
-            elif i == progress.current:
-                if progress.status == "SUCCESS" and progress.current == progress.total - 1:
-                    icon, status = "✓", "SUCCESS"
-                elif progress.status == "FAILURE":
-                    icon, status = "✗", "FAILURE"
-                else:
-                    icon, status = "⟳", "RUNNING"
-            else:
-                icon, status = "○", "PENDING"
-            step_data.append((icon, step.label, status))
-
-        pct = progress.progress if progress else 0
-        task_name = last.task_name if last else ""
-        panel.update_steps(step_data, pct, task_name)
-
-    def _update_world_panel(self) -> None:
-        panel = self.query_one("#panel-world", WorldPanel)
-        panel.update_pois(self._session.list_pois())
+        # Update all panels
+        for panel in self.query(BasePanel):
+            panel.on_tick(self._session)
 
     # ------------------------------------------------------------------
     # Command input
@@ -321,18 +341,18 @@ class DefinedApp(App):
 
     def _execute_command(self, cmd) -> None:
         if cmd.kind == CommandKind.UNKNOWN:
-            self._show_feedback(f"[red]{cmd.error}[/red]")
+            self._log_activity(f"[red]{cmd.error}[/red]")
             return
 
         if cmd.kind == CommandKind.HELP:
-            self._show_feedback(_HELP_TEXT)
+            self._log_activity(_HELP_TEXT)
             return
 
         if cmd.kind == CommandKind.QUIT:
             if self._session.mission_status in (
                 MissionStatus.COMPILING, MissionStatus.DEPLOYING, MissionStatus.RUNNING,
             ):
-                self._show_feedback("[yellow]Mission running. /stop first, then /quit.[/yellow]")
+                self._log_activity("[yellow]Mission running. /stop first, then /quit.[/yellow]")
                 return
             self.exit()
             return
@@ -341,7 +361,7 @@ class DefinedApp(App):
             conn = self._session.connection_status.value
             mission = self._session.mission_status.value
             pois = len(self._session.list_pois())
-            self._show_feedback(f"Connection: {conn} | Mission: {mission} | POIs: {pois}")
+            self._log_activity(f"Connection: {conn} | Mission: {mission} | POIs: {pois}")
             return
 
         if cmd.kind == CommandKind.RUN:
@@ -350,15 +370,15 @@ class DefinedApp(App):
 
         if cmd.kind == CommandKind.STOP:
             self._session.stop_mission()
-            self._show_feedback("Mission stopped.")
+            self._log_activity("Mission stopped.")
             return
 
         if cmd.kind == CommandKind.RESTART:
             try:
                 self._session.restart_mission()
-                self._show_feedback("Restarting last mission...")
+                self._log_activity("Restarting last mission...")
             except RuntimeError as exc:
-                self._show_feedback(f"[red]{exc}[/red]")
+                self._log_activity(f"[red]{exc}[/red]")
             return
 
         if cmd.kind == CommandKind.WORLD_ADD:
@@ -366,36 +386,34 @@ class DefinedApp(App):
             try:
                 x, y = float(x_str), float(y_str)
             except ValueError:
-                self._show_feedback("[red]Coordinates must be numbers.[/red]")
+                self._log_activity("[red]Coordinates must be numbers.[/red]")
                 return
             self._session.add_poi(name, x, y)
-            self._update_world_panel()
-            self._show_feedback(f"Added POI '{name}' at ({x}, {y})")
+            self._log_activity(f"Added POI '{name}' at ({x}, {y})")
             return
 
         if cmd.kind == CommandKind.WORLD_LIST:
             pois = self._session.list_pois()
             if not pois:
-                self._show_feedback("No POIs defined.")
+                self._log_activity("No POIs defined.")
             else:
                 lines = [f"  {name}: ({p['center']['x']:.1f}, {p['center']['y']:.1f})" for name, p in pois.items()]
-                self._show_feedback("POIs:\n" + "\n".join(lines))
+                self._log_activity("POIs:\n" + "\n".join(lines))
             return
 
         if cmd.kind == CommandKind.WORLD_MARK:
             try:
                 x, y = self._session.mark_poi(cmd.args[0])
-                self._update_world_panel()
-                self._show_feedback(f"Marked '{cmd.args[0]}' at ({x:.2f}, {y:.2f})")
+                self._log_activity(f"Marked '{cmd.args[0]}' at ({x:.2f}, {y:.2f})")
             except Exception as exc:
-                self._show_feedback(f"[red]Mark failed: {exc}[/red]")
+                self._log_activity(f"[red]Mark failed: {exc}[/red]")
             return
 
         if cmd.kind == CommandKind.DETAIL:
-            diag = self.query_one("#panel-diagnostics", DiagnosticsPanel)
+            diag = self.query_one(f"#{DiagnosticsPanel.PANEL_ID}", DiagnosticsPanel)
             diag.cycle_detail()
             level = {1: "Summary", 2: "Suggestions", 3: "Advanced"}.get(diag._detail_level, "")
-            self._show_feedback(f"Diagnostics detail: {level}")
+            self._log_activity(f"Diagnostics detail: {level}")
             return
 
         if cmd.kind == CommandKind.TELEOP:
@@ -409,38 +427,34 @@ class DefinedApp(App):
     def action_emergency_stop(self) -> None:
         """Emergency stop: halt motion, abort mission, and exit teleop mode."""
         self._teleop_mode = False
-        tele = self.query_one("#panel-teleop", TelePanel)
-        tele.remove_class("active")
-        tele.update_velocity(0.0, 0.0)
-        tele.set_active_direction(None)
+        tele = self.query_one(f"#{TelePanel.PANEL_ID}", TelePanel)
+        tele.set_active(False)
         self._session.emergency_stop()
-        self._show_feedback("[bold red]⛔ EMERGENCY STOP — robot halted[/bold red]")
+        self._log_activity("[bold red]⛔ EMERGENCY STOP — robot halted[/bold red]")
         self.query_one("#command-input", Input).focus()
 
     def _toggle_teleop(self) -> None:
-        """Enter or exit teleop mode, showing or hiding the TelePanel."""
+        """Enter or exit teleop mode."""
         self._teleop_mode = not self._teleop_mode
-        tele = self.query_one("#panel-teleop", TelePanel)
+        tele = self.query_one(f"#{TelePanel.PANEL_ID}", TelePanel)
         if self._teleop_mode:
-            tele.add_class("active")
-            tele.update_velocity(0.0, 0.0)
-            tele.set_active_direction(None)
+            tele.set_active(True)
             # Blur command input so arrow keys bubble to on_key
             self.set_focus(None)
-            self._show_feedback(
+            self._log_activity(
                 "[yellow]Teleop ON — arrows=move, space=stop, Escape or /teleop to exit[/yellow]"
             )
         else:
-            tele.remove_class("active")
+            tele.set_active(False)
             self._send_teleop_stop()
             self.query_one("#command-input", Input).focus()
-            self._show_feedback("Teleop OFF.")
+            self._log_activity("Teleop OFF.")
 
     def _send_velocity(self, linear_x: float, angular_z: float, direction: str | None = None) -> None:
         """Publish velocity, update TelePanel display, and schedule auto-stop."""
         self._session.publish_velocity(linear_x, angular_z)
         if self._teleop_mode:
-            tele = self.query_one("#panel-teleop", TelePanel)
+            tele = self.query_one(f"#{TelePanel.PANEL_ID}", TelePanel)
             tele.update_velocity(linear_x, angular_z)
             tele.set_active_direction(direction)
         # Cancel previous auto-stop and schedule a new one
@@ -455,7 +469,7 @@ class DefinedApp(App):
         """Publish zero velocity and clear active direction in TelePanel."""
         self._session.publish_velocity(0.0, 0.0)
         if self._teleop_mode:
-            tele = self.query_one("#panel-teleop", TelePanel)
+            tele = self.query_one(f"#{TelePanel.PANEL_ID}", TelePanel)
             tele.update_velocity(0.0, 0.0)
             tele.set_active_direction(None)
 
@@ -483,31 +497,40 @@ class DefinedApp(App):
     def _run_task(self, name: str, param_overrides: dict[str, str] | None = None) -> None:
         """Find a matching task file and run it."""
         if self._rdf is None:
-            self._show_feedback("[red]No RDF file specified. Use --rdf flag.[/red]")
+            self._log_activity("[red]No RDF file specified. Use --rdf flag.[/red]")
             return
 
         # Fuzzy match *.task.yaml
         pattern = str(self._task_dir / "**" / f"*{name}*.task.yaml")
         matches = glob.glob(pattern, recursive=True)
         if not matches:
-            self._show_feedback(f"[red]No task file matching '{name}' found.[/red]")
+            self._log_activity(f"[red]No task file matching '{name}' found.[/red]")
             return
 
         task_path = Path(matches[0])
         if len(matches) > 1:
             names = [Path(m).stem for m in matches[:5]]
-            self._show_feedback(f"Multiple matches: {names}. Using {task_path.name}")
+            self._log_activity(f"Multiple matches: {names}. Using {task_path.name}")
 
         try:
             self._session.run_mission(task_path, self._rdf, param_overrides=param_overrides or None)
             suffix = f" ({', '.join(f'{k}={v}' for k, v in param_overrides.items())})" if param_overrides else ""
-            self._show_feedback(f"Running {task_path.name}{suffix}...")
+            self._log_activity(f"Running {task_path.name}{suffix}...")
         except RuntimeError as exc:
-            self._show_feedback(f"[red]{exc}[/red]")
+            self._log_activity(f"[red]{exc}[/red]")
 
-    def _show_feedback(self, text: str) -> None:
-        feedback = self.query_one("#feedback-line", Static)
-        feedback.update(text)
+    def _log_activity(self, text: str, *, dedup: bool = False) -> None:
+        """Append a message to the activity log.
+
+        Args:
+            text: Rich-markup text to display.
+            dedup: If True, skip if identical to the last logged message.
+        """
+        if dedup and text == self._last_activity_msg:
+            return
+        self._last_activity_msg = text
+        log = self.query_one("#activity-log", RichLog)
+        log.write(text)
 
     # ------------------------------------------------------------------
     # Key bindings
@@ -516,8 +539,10 @@ class DefinedApp(App):
     def action_focus_command(self) -> None:
         if self._teleop_mode:
             self._teleop_mode = False
+            tele = self.query_one(f"#{TelePanel.PANEL_ID}", TelePanel)
+            tele.set_active(False)
             self._send_teleop_stop()
-            self._show_feedback("Teleop OFF.")
+            self._log_activity("Teleop OFF.")
         self.query_one("#command-input", Input).focus()
 
     def action_quit_app(self) -> None:

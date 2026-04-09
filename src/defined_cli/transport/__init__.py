@@ -71,6 +71,13 @@ class TransportBase(ABC):
         Default is a no-op for backends that don't support velocity control.
         """
 
+    def fetch_pose(self, timeout: float = 5.0, topic: str = "/odom") -> tuple[float, float]:
+        """Fetch the robot's current (x, y) position via the existing connection.
+
+        Default raises NotImplementedError. Override in subclasses.
+        """
+        raise NotImplementedError("fetch_pose not supported by this transport")
+
     @property
     def is_connected(self) -> bool:
         """True if currently connected. Subclasses should override."""

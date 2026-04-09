@@ -37,6 +37,7 @@ Once inside the TUI, type commands in the bottom bar:
 | `/world add <name> <x> <y>` | Add a POI |
 | `/world list` | Show all POIs |
 | `/world mark <name>` | Mark robot position as POI |
+| `/teleop` | Toggle teleop mode (also auto-activates on panel focus) |
 | `/status` | Connection + mission + POI summary |
 | `/help` | Full command reference |
 | `/quit` | Exit (must `/stop` first if mission running) |
@@ -213,6 +214,7 @@ class ZenohTransport(TransportBase):
     def send_task(self, bt_xml_path: str) -> None: ...
     def subscribe_status(self, callback) -> None: ...
     def wait_ready(self, timeout: float = 10.0) -> bool: ...
+    def fetch_pose(self) -> tuple[float, float]: ...  # robot pose from /odom
 
     @property
     def is_connected(self) -> bool: ...

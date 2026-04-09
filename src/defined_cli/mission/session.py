@@ -517,9 +517,7 @@ class DefinedSession:
 
     def mark_poi(self, name: str, *, poi_type: str = "static", radius: float = 0.5) -> tuple[float, float]:
         """Mark the robot's current position as a named POI."""
-        from defined_cli.transport.pose import fetch_robot_pose
-
-        x, y = fetch_robot_pose()
+        x, y = self._transport.fetch_pose()
         self.add_poi(name, x, y, poi_type=poi_type, radius=radius)
         return (x, y)
 
