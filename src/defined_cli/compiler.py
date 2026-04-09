@@ -184,7 +184,7 @@ def _compile(
                 registry, verb_data["required_capabilities"]
             )
             if not result.passed:
-                available = registry.list_capabilities()
+                available = registry.list_types()
                 raise CompilationError(
                     f"Robot '{robot.name}' lacks capabilities required by "
                     f"verb '{verb_name}': {result.missing}",
