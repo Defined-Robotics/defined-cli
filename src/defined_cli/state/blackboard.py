@@ -125,6 +125,8 @@ class Blackboard:
         """
         if isinstance(center, tuple):
             center = {"x": center[0], "y": center[1]}
+        else:
+            center = dict(center)
 
         self.set(f"{_POI_PREFIX}.{name}", {
             "center": center,

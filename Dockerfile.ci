@@ -5,11 +5,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/*
 
 # Install upstream deps from source (until published to PyPI)
-RUN --mount=type=secret,id=github_token \
-    GITHUB_TOKEN=$(cat /run/secrets/github_token) && \
-    pip install --no-cache-dir \
-    "defined-rdf @ git+https://${GITHUB_TOKEN}@github.com/Defined-Robotics/defined-rdf.git@trunk" \
-    "defined-compiler @ git+https://${GITHUB_TOKEN}@github.com/Defined-Robotics/defined-compiler.git@trunk"
+RUN pip install --no-cache-dir \
+    "defined-rdf @ git+https://github.com/Defined-Robotics/rdf.git@trunk" \
+    "defined-compiler @ git+https://github.com/Defined-Robotics/verb-compiler.git@trunk"
 
 COPY pyproject.toml .
 RUN pip install --no-cache-dir -e ".[dev]"

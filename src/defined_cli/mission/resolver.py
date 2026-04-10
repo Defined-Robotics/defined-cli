@@ -17,7 +17,7 @@ import copy
 
 from defined_cli.state.blackboard import Blackboard
 
-_REF_PREFIX = "$"
+_REF_PREFIX = "$world.pois."
 
 
 class ResolverError(Exception):
@@ -72,7 +72,7 @@ def _resolve_params(params: dict, blackboard: Blackboard) -> None:
             continue
 
         path = value[len(_REF_PREFIX):]
-        resolved = blackboard.get(path)
+        resolved = copy.deepcopy(blackboard.get_poi(path))
 
         if resolved is None:
             available = list(blackboard.list_pois().keys())
