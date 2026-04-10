@@ -112,3 +112,59 @@ class TestStatusCommand:
         result = runner.invoke(cli, ["status"])
         assert result.exit_code == 0
         assert "stopped" in result.output.lower()
+
+
+class TestWorldCommands:
+
+    def test_world_add_exits_zero(self, tmp_path):
+        runner = CliRunner()
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            # Patch StateStore to use tmp path
+            with patch("defined_cli.main.StateStore") as mock_store_cls:
+                from defined_cli.state.store import StateStore
+                store = StateStore(path=tmp_path / "state.yaml")
+                mock_store_cls.return_value = store
+                result = runner.invoke(cli, ["world", "add", "dock", "0.0", "0.0", "--type", "constant"])
+        assert result.exit_code == 0
+        assert "dock" in result.output
+
+    def test_world_list_exits_zero_when_empty(self, tmp_path):
+        runner = CliRunner()
+        with patch("defined_cli.main.StateStore") as mock_store_cls:
+            from defined_cli.state.store import StateStore
+            store = StateStore(path=tmp_path / "state.yaml")
+            mock_store_cls.return_value = store
+            result = runner.invoke(cli, ["world", "list"])
+        assert result.exit_code == 0
+
+    def test_world_list_shows_added_poi(self, tmp_path):
+        runner = CliRunner()
+        with patch("defined_cli.main.StateStore") as mock_store_cls:
+            from defined_cli.state.store import StateStore
+            store = StateStore(path=tmp_path / "state.yaml")
+            mock_store_cls.return_value = store
+            runner.invoke(cli, ["world", "add", "survey-1", "1.5", "2.0"])
+            result = runner.invoke(cli, ["world", "list"])
+        assert "survey-1" in result.output
+
+    def test_world_help(self):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["world", "--help"])
+        assert result.exit_code == 0
+        assert "add" in result.output
+        assert "list" in result.output
+
+    def test_monitor_help(self):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["monitor", "--help"])
+        assert result.exit_code == 0
+        assert "--task" in result.output
+        assert "--rdf" in result.output
+        assert "--no-launch" in result.output
+
+    def test_help_shows_monitor_and_world(self):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["--help"])
+        assert result.exit_code == 0
+        assert "monitor" in result.output
+        assert "world" in result.output
