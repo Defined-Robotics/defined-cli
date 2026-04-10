@@ -1,6 +1,6 @@
 {
   "configById": {
-    "3d-panel": {
+    "3D!main": {
       "cameraState": {
         "distance": 15,
         "perspective": true,
@@ -22,7 +22,7 @@
           "colorMode": "flat",
           "flatColor": "#ff0000"
         },
-        "/explore/frontiers": {
+        "/odom": {
           "visible": true
         },
         "/global_costmap/costmap": {
@@ -33,20 +33,20 @@
         "enablePreloading": true
       }
     },
-    "publish-panel": {
+    "Publish!click": {
       "topicName": "/clicked_point",
       "datatype": "geometry_msgs/msg/PointStamped",
       "value": "{\n  \"header\": {\n    \"frame_id\": \"map\"\n  },\n  \"point\": {\n    \"x\": 0.0,\n    \"y\": 0.0,\n    \"z\": 0.0\n  }\n}"
     },
-    "raw-messages": {
+    "RawMessages!status": {
       "topicPath": "/task_status",
       "diffEnabled": false,
       "diffMethod": "custom",
       "diffTopicPath": "",
       "showFullMessageForDiff": false
     },
-    "topic-graph": {
-      "topicFilter": "/task_status|/task_command|/clicked_point|/map|/scan"
+    "TopicGraph!graph": {
+      "topicFilter": "/task_status|/task_command|/task_reports|/clicked_point|/map|/scan|/odom"
     }
   },
   "globalVariables": {},
@@ -55,14 +55,14 @@
     "direction": "row",
     "first": {
       "direction": "column",
-      "first": "3d-panel",
-      "second": "publish-panel",
+      "first": "3D!main",
+      "second": "Publish!click",
       "splitPercentage": 75
     },
     "second": {
       "direction": "column",
-      "first": "raw-messages",
-      "second": "topic-graph",
+      "first": "RawMessages!status",
+      "second": "TopicGraph!graph",
       "splitPercentage": 60
     },
     "splitPercentage": 70

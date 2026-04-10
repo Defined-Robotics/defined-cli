@@ -32,30 +32,54 @@ Import the provided layout for the best experience:
 2. Select `work/cli/sample/foxglove/defined_demo.json`
 
 This gives you:
-- 3D panel with map, scan, and robot visualization
+- 3D panel with map, scan, and odometry visualization
 - Publish panel pre-configured for `/clicked_point` (POI marking)
-- Task status panel
+- Raw messages panel showing `/task_status` JSON
+- Topic graph filtered to defined topics
 
-## Step 3: Explore the Map
-
-The robot autonomously explores using frontier-based SLAM:
+## Step 3: Launch the TUI
 
 ```bash
 cd work/cli
-defined monitor --task sample/tasks/explore.task.yaml \
-    --rdf sample/robot.rdf.yaml --no-launch
+defined --rdf sample/robot.rdf.yaml
 ```
 
-Watch the TUI show exploration progress. In Foxglove, you'll see:
+The TUI launches immediately and shows "Disconnected" while it connects to
+rosbridge in the background. Once connected, the status bar turns green.
+
+The TUI has three panels:
+- **Mission** — active task steps and status
+- **World** — POIs currently in state
+- **Diagnostics** — robot diagnostics and topic health
+
+Use the **command bar** at the bottom to submit tasks (type a task YAML path
+and press Enter). Press `q` to quit.
+
+## Step 4: Explore the Map
+
+Submit the explore task from the TUI command bar:
+
+```
+Task YAML: sample/tasks/explore.task.yaml
+```
+
+Or run without TUI (standalone):
+
+```bash
+cd work/cli
+defined compile sample/tasks/explore.task.yaml --rdf sample/robot.rdf.yaml
+```
+
+In Foxglove you'll see:
 - The SLAM map building in real-time
 - The robot navigating to frontier boundaries
-- Frontier markers (green) disappearing as areas are explored
+- `/task_status` panel updating with exploration progress
 
 Exploration completes when no more frontiers remain (map is fully built).
 
-## Step 4: Mark Points of Interest
+## Step 5: Mark Points of Interest
 
-### Option A: Click on map (recommended)
+### Option A: Watch for map clicks (recommended for demo)
 
 ```bash
 defined world watch
@@ -65,7 +89,7 @@ In Foxglove's 3D panel, click on locations in the map. Each click publishes
 to `/clicked_point`. The CLI will prompt you for a name:
 
 ```
-Watching for clicks on /clicked_point... (Ctrl+C to stop)
+Watching for clicks on /clicked_point… (Ctrl+C to stop)
 
 [click] (1.52, 2.01)  Name: survey-1  ✓ saved
 [click] (3.05, 0.98)  Name: survey-2  ✓ saved
@@ -100,7 +124,7 @@ bash sample/seed_world.sh
 
 Note: negative coordinates require `--` separator before the values.
 
-## Step 5: Verify POIs
+## Step 6: Verify POIs
 
 ```bash
 defined world list
@@ -120,20 +144,27 @@ Should show all POIs with coordinates and types:
 └──────────┴───────┴───────┴──────────┴────────┘
 ```
 
-## Step 6: Run Patrol
+## Step 7: Run Patrol
+
+Submit the patrol task from the TUI command bar (if TUI is still open):
+
+```
+Task YAML: sample/tasks/patrol_pois.task.yaml
+```
+
+Or launch a fresh TUI session with the patrol task pre-loaded:
 
 ```bash
-defined monitor --task sample/tasks/patrol_pois.task.yaml \
-    --rdf sample/robot.rdf.yaml --no-launch
+defined --rdf sample/robot.rdf.yaml
 ```
 
 The TUI shows:
 - Robot status: IDLE → ON_MISSION
 - Steps progressing through go_to/report pairs
-- Reports appearing as the robot visits each POI
+- Reports appearing in the World panel as the robot visits each POI
 - Mission completing with SUCCESS
 
-## Step 7: Clean Up
+## Step 8: Clean Up
 
 ```bash
 cd work/defined_platform/docker
@@ -148,7 +179,7 @@ Use `-v` to clear cached build volumes if you've changed C++ code.
 → Run `defined world list` and check that POI names in your task YAML
 match exactly. POI names are case-sensitive.
 
-**"Connection refused" / "Cannot connect to rosbridge"**
+**"Connection refused" / TUI shows Disconnected**
 → Ensure the sim is running: `docker compose ps`
 → Check rosbridge: `curl -s http://localhost:9090` should connect
 
