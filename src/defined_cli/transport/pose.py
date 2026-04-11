@@ -8,11 +8,14 @@ This module has zero CLI-specific imports (no click, no rich).
 
 from __future__ import annotations
 
+import logging
 import threading
 
 import roslibpy
 
 from defined_cli.transport.rosbridge import _get_reactor
+
+_log = logging.getLogger(__name__)
 
 
 def fetch_robot_pose(
@@ -66,7 +69,7 @@ def fetch_robot_pose(
             result["y"] = pos["y"]
             got_pose.set()
         except (KeyError, TypeError):
-            pass
+            _log.debug("Unexpected pose message format", exc_info=True)
 
     pose_topic = roslibpy.Topic(ros, topic, "geometry_msgs/PoseWithCovarianceStamped")
     reactor.callFromThread(pose_topic.subscribe, _on_message)
@@ -76,7 +79,7 @@ def fetch_robot_pose(
             reactor.callFromThread(pose_topic.unsubscribe)
             ros.close()
         except Exception:
-            pass
+            _log.debug("Cleanup failed after pose timeout", exc_info=True)
         raise TimeoutError(
             f"No pose received on {topic} within {timeout}s. "
             "Is SLAM/AMCL running?"
@@ -86,7 +89,7 @@ def fetch_robot_pose(
         reactor.callFromThread(pose_topic.unsubscribe)
         ros.close()
     except Exception:
-        pass
+        _log.debug("Cleanup failed after pose fetch", exc_info=True)
 
     return result["x"], result["y"]
 
@@ -125,7 +128,7 @@ def subscribe_clicked_point(
             if callback:
                 callback(point["x"], point["y"])
         except (KeyError, TypeError):
-            pass
+            _log.debug("Unexpected clicked_point format", exc_info=True)
 
     topic = roslibpy.Topic(ros, "/clicked_point", "geometry_msgs/PointStamped")
     reactor.callFromThread(topic.subscribe, _on_click)

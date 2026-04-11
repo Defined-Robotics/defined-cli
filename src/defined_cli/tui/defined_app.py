@@ -52,6 +52,7 @@ Usage:
 from __future__ import annotations
 
 import glob
+import logging
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -80,6 +81,7 @@ from defined_cli.tui.panels.world import WorldPanel
 if TYPE_CHECKING:
     from defined_cli.mission.session import DefinedSession
 
+_log = logging.getLogger(__name__)
 
 _HELP_TEXT = """\
 [bold]Commands:[/bold]
@@ -173,7 +175,7 @@ class DefinedApp(App):
         try:
             self._session.connect()
         except Exception:
-            pass  # status bar will show Disconnected
+            _log.debug("Background connect failed", exc_info=True)
 
 
     def on_tele_panel_focus_changed(self, event: TelePanel.FocusChanged) -> None:
@@ -405,7 +407,7 @@ class DefinedApp(App):
             try:
                 self._teleop_stop_handle.stop()
             except Exception:
-                pass
+                _log.debug("Failed to cancel teleop stop timer", exc_info=True)
         self._teleop_stop_handle = self.set_timer(0.6, self._send_teleop_stop)
 
     def _send_teleop_stop(self) -> None:
