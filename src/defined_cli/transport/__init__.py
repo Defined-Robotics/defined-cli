@@ -15,6 +15,15 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 
+class ExecutorAborted(Exception):
+    """Raised by wait_for_executor when cancelled by an abort_event.
+
+    Distinct from TimeoutError so callers can tell an E-STOP abort apart
+    from a genuine timeout without re-reading the (now potentially cleared)
+    abort_event flag.
+    """
+
+
 @dataclass(frozen=True)
 class TaskProgress:
     """Progress update from the BT executor.

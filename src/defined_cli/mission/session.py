@@ -58,7 +58,7 @@ from defined_cli.mission.resolver import ResolverError, resolve_references
 from defined_cli.state.blackboard import Blackboard
 from defined_cli.state.model import MissionRecord, RobotStatus, StateSnapshot
 from defined_cli.state.store import StateStore
-from defined_cli.transport import TaskProgress, TransportBase
+from defined_cli.transport import ExecutorAborted, TaskProgress, TransportBase
 
 if TYPE_CHECKING:
     from defined_cli.compiler import CompileResult, StepInfo
@@ -472,13 +472,15 @@ class DefinedSession:
 
             # Deploy phase
             self._emit("mission", "Waiting for executor...")
-            if not self._transport.wait_for_executor(
-                timeout=_EXECUTOR_WAIT_TIMEOUT,
-                abort_event=self._stop_event,
-            ):
-                if self._stop_event.is_set():
-                    outcome = "ABORTED"
-                    return
+            try:
+                executor_ready = self._transport.wait_for_executor(
+                    timeout=_EXECUTOR_WAIT_TIMEOUT,
+                    abort_event=self._stop_event,
+                )
+            except ExecutorAborted:
+                outcome = "ABORTED"
+                return
+            if not executor_ready:
                 raise TimeoutError(
                     f"BT executor did not become ready within {_EXECUTOR_WAIT_TIMEOUT}s"
                 )

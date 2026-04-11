@@ -36,7 +36,7 @@ import roslibpy
 _log = logging.getLogger(__name__)
 
 from defined_cli.errors import TransportConnectionError as DefinedConnectionError
-from defined_cli.transport import TaskProgress, TransportBase
+from defined_cli.transport import ExecutorAborted, TaskProgress, TransportBase
 
 # ---------------------------------------------------------------------------
 # Twisted reactor — one per process
@@ -232,11 +232,13 @@ class RosbridgeTransport(TransportBase):
 
         # Poll in short increments so abort_event is checked promptly.
         deadline = time.monotonic() + timeout
+        aborted = False
         while not ready.is_set():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
             if abort_event is not None and abort_event.is_set():
+                aborted = True
                 break
             ready.wait(timeout=min(remaining, 0.5))
 
@@ -244,6 +246,9 @@ class RosbridgeTransport(TransportBase):
             self._reactor.callFromThread(topic.unsubscribe)
         except Exception:
             _log.debug("Failed to unsubscribe executor topic", exc_info=True)
+
+        if aborted:
+            raise ExecutorAborted()
         return ready.is_set()
 
     def fetch_pose(self, timeout: float = 5.0, topic: str = "/odom") -> tuple[float, float]:
