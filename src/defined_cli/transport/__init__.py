@@ -9,9 +9,19 @@ via WebSocket to rosbridge at ``ws://localhost:9090``.
 
 from __future__ import annotations
 
+import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
+
+
+class ExecutorAborted(Exception):
+    """Raised by wait_for_executor when cancelled by an abort_event.
+
+    Distinct from TimeoutError so callers can tell an E-STOP abort apart
+    from a genuine timeout without re-reading the (now potentially cleared)
+    abort_event flag.
+    """
 
 
 @dataclass(frozen=True)
@@ -61,10 +71,14 @@ class TransportBase(ABC):
             callback: Called with each report message string.
         """
 
-    def wait_for_executor(self, timeout: float = 60.0) -> bool:
+    def wait_for_executor(
+        self,
+        timeout: float = 60.0,
+        abort_event: threading.Event | None = None,
+    ) -> bool:
         """Wait for the BT executor to publish an IDLE heartbeat.
 
-        Returns True when the executor is ready, False on timeout.
+        Returns True when the executor is ready, False on timeout or abort.
 
         Optional — default returns True immediately (treats the executor
         as always ready). **Override this in real transports.** The
@@ -72,7 +86,8 @@ class TransportBase(ABC):
         the task, so an incorrect True here silences readiness failures.
 
         Args:
-            timeout: Seconds to wait before giving up.
+            timeout:     Seconds to wait before giving up.
+            abort_event: Optional event that cancels the wait early (e.g. E-STOP).
 
         Returns:
             True if the executor became ready within *timeout*, else False.

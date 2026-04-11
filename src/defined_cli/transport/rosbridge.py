@@ -36,7 +36,7 @@ import roslibpy
 _log = logging.getLogger(__name__)
 
 from defined_cli.errors import TransportConnectionError as DefinedConnectionError
-from defined_cli.transport import TaskProgress, TransportBase
+from defined_cli.transport import ExecutorAborted, TaskProgress, TransportBase
 
 # ---------------------------------------------------------------------------
 # Twisted reactor — one per process
@@ -203,8 +203,17 @@ class RosbridgeTransport(TransportBase):
 
         self._reactor.callFromThread(self._reports_topic.subscribe, _on_report)
 
-    def wait_for_executor(self, timeout: float = 60.0) -> bool:
-        """Wait for the BT executor to publish an IDLE heartbeat on /task_status."""
+    def wait_for_executor(
+        self,
+        timeout: float = 60.0,
+        abort_event: threading.Event | None = None,
+    ) -> bool:
+        """Wait for the BT executor to publish an IDLE heartbeat on /task_status.
+
+        Args:
+            timeout:     Seconds to wait before giving up.
+            abort_event: Optional event that cancels the wait early (e.g. E-STOP).
+        """
         if self._ros is None or not self._ros.is_connected:
             return False
 
@@ -220,12 +229,27 @@ class RosbridgeTransport(TransportBase):
                 _log.debug("Malformed executor status message", exc_info=True)
 
         self._reactor.callFromThread(topic.subscribe, _on_idle)
-        result = ready.wait(timeout=timeout)
+
+        # Poll in short increments so abort_event is checked promptly.
+        deadline = time.monotonic() + timeout
+        aborted = False
+        while not ready.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            if abort_event is not None and abort_event.is_set():
+                aborted = True
+                break
+            ready.wait(timeout=min(remaining, 0.5))
+
         try:
             self._reactor.callFromThread(topic.unsubscribe)
         except Exception:
             _log.debug("Failed to unsubscribe executor topic", exc_info=True)
-        return result
+
+        if aborted:
+            raise ExecutorAborted()
+        return ready.is_set()
 
     def fetch_pose(self, timeout: float = 5.0, topic: str = "/odom") -> tuple[float, float]:
         """Fetch robot (x, y) using the existing rosbridge connection.
