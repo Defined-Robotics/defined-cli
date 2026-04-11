@@ -408,13 +408,18 @@ class DefinedSession:
         record.completed_at = datetime.now(timezone.utc).isoformat()
         record.result = outcome
         self._snapshot.mission_history.append(record)
-        self._snapshot.robot.current = RobotStatus.IDLE
-        self._snapshot.robot.last_mission_result = outcome
-        self._current_mission = record
-        self._mission_status = (
-            MissionStatus.SUCCEEDED if outcome == "SUCCESS"
-            else MissionStatus.FAILED
-        )
+
+        # Only update live status if this mission is still the active one.
+        # After E-STOP a new mission may have already started; the old thread
+        # must not overwrite COMPILING/DEPLOYING/RUNNING with FAILED.
+        if self._current_mission is record:
+            self._snapshot.robot.current = RobotStatus.IDLE
+            self._snapshot.robot.last_mission_result = outcome
+            self._current_mission = record
+            self._mission_status = (
+                MissionStatus.SUCCEEDED if outcome == "SUCCESS"
+                else MissionStatus.FAILED
+            )
         self._store.save(self._snapshot)
 
     def _run_mission_thread(
@@ -467,10 +472,20 @@ class DefinedSession:
 
             # Deploy phase
             self._emit("mission", "Waiting for executor...")
-            if not self._transport.wait_for_executor(timeout=_EXECUTOR_WAIT_TIMEOUT):
+            if not self._transport.wait_for_executor(
+                timeout=_EXECUTOR_WAIT_TIMEOUT,
+                abort_event=self._stop_event,
+            ):
+                if self._stop_event.is_set():
+                    outcome = "ABORTED"
+                    return
                 raise TimeoutError(
                     f"BT executor did not become ready within {_EXECUTOR_WAIT_TIMEOUT}s"
                 )
+
+            if self._stop_event.is_set():
+                outcome = "ABORTED"
+                return
 
             xml_path_str = self._target.resolve_xml_path(result.xml_path)
 
