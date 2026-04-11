@@ -65,6 +65,34 @@ def cli(ctx: click.Context, verbose: bool, target: str, host: str, port: int, rd
         _launch_tui(target=target, host=host, port=port, rdf=rdf)
 
 
+def _select_target(
+    *,
+    manifest: object | None = None,
+    target_flag: str = "sim",
+    world_env: str | None = None,
+    port: int = 9090,
+) -> object:
+    """Select the appropriate target based on manifest and CLI flags.
+
+    When a manifest has a ``sim`` section with an image, use
+    DockerImageTarget (pre-built image via ``docker run``).
+    Otherwise fall back to SimTarget (docker compose).
+
+    This function is deliberately import-lazy to keep module load fast.
+    """
+    from .manifest import ProjectManifest
+    from .target.docker_image import DockerImageTarget
+    from .target.sim import SimTarget
+
+    if manifest is not None and isinstance(manifest, ProjectManifest) and manifest.sim is not None:
+        return DockerImageTarget(
+            image=manifest.sim.image,
+            world_env=world_env,
+            port=port,
+        )
+    return SimTarget()
+
+
 def _launch_tui(
     *,
     target: str = "sim",
@@ -77,7 +105,6 @@ def _launch_tui(
     from .mission.session import DefinedSession
     from .state.blackboard import Blackboard
     from .state.world_loader import load_world, seed_blackboard
-    from .target.sim import SimTarget
     from .transport.rosbridge import RosbridgeTransport
     from .tui.defined_app import DefinedApp
 
@@ -102,14 +129,31 @@ def _launch_tui(
         raise click.UsageError(
             "Hardware target is not yet implemented. Use --target sim."
         )
-    target_obj = SimTarget()
-    transport_obj = RosbridgeTransport(host=host, port=port)
-    store = StateStore()
 
-    # --- World loading (if manifest references a world file) ---
+    # --- Target selection ---
+    world_env = None
     if manifest and manifest.world is not None and manifest.world.file.exists():
         try:
             world = load_world(manifest.world.file)
+            if world.sim is not None:
+                world_env = world.sim.environment
+        except Exception:
+            world = None
+    else:
+        world = None
+
+    target_obj = _select_target(
+        manifest=manifest,
+        target_flag=target,
+        world_env=world_env,
+        port=port,
+    )
+    transport_obj = RosbridgeTransport(host=host, port=port)
+    store = StateStore()
+
+    # --- World loading (seed blackboard with POIs) ---
+    if world is not None:
+        try:
             snapshot = store.load()
             bb = Blackboard(data={"world": {"pois": snapshot.world.pois}})
             seed_blackboard(world, bb)
