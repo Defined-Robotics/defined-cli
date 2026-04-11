@@ -3,6 +3,9 @@
 Parses /commands typed into the command bar and returns structured
 ``ParsedCommand`` objects.  No TUI framework dependency — pure logic.
 
+Commands are defined declaratively in ``_COMMANDS``. To add a new
+command, add an entry to the dict — no parsing logic changes needed.
+
 Available commands
 ------------------
 /run <task> [key=value ...]
@@ -32,6 +35,11 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 
 
+# ---------------------------------------------------------------------------
+# Public types
+# ---------------------------------------------------------------------------
+
+
 class CommandKind(Enum):
     RUN = auto()
     STOP = auto()
@@ -56,6 +64,65 @@ class ParsedCommand:
     error: str = ""
 
 
+# ---------------------------------------------------------------------------
+# Declarative command registry
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _CommandSpec:
+    """Spec for a single command or subcommand.
+
+    Args:
+        kind: The ``CommandKind`` this command maps to.
+        n_args: Number of required positional arguments.
+        usage: Error message shown when argument count is wrong.
+        has_kwargs: If True, extra arguments after positional args are
+            parsed as ``key=value`` pairs.
+    """
+
+    kind: CommandKind
+    n_args: int = 0
+    usage: str = ""
+    has_kwargs: bool = False
+
+
+_COMMANDS: dict[str, _CommandSpec | dict[str, _CommandSpec]] = {
+    "/run": _CommandSpec(
+        CommandKind.RUN,
+        n_args=1,
+        usage="Usage: /run <task-name> [key=value ...]",
+        has_kwargs=True,
+    ),
+    "/stop": _CommandSpec(CommandKind.STOP),
+    "/restart": _CommandSpec(CommandKind.RESTART),
+    "/quit": _CommandSpec(CommandKind.QUIT),
+    "/help": _CommandSpec(CommandKind.HELP),
+    "/status": _CommandSpec(CommandKind.STATUS),
+    "/detail": _CommandSpec(CommandKind.DETAIL),
+    "/teleop": _CommandSpec(CommandKind.TELEOP),
+    "/estop": _CommandSpec(CommandKind.ESTOP),
+    "/world": {
+        "add": _CommandSpec(
+            CommandKind.WORLD_ADD,
+            n_args=3,
+            usage="Usage: /world add <name> <x> <y>. Requires name and coordinates.",
+        ),
+        "list": _CommandSpec(CommandKind.WORLD_LIST),
+        "mark": _CommandSpec(
+            CommandKind.WORLD_MARK,
+            n_args=1,
+            usage="Usage: /world mark <name>. Requires a name.",
+        ),
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Parser
+# ---------------------------------------------------------------------------
+
+
 def parse_command(raw: str) -> ParsedCommand:
     """Parse a raw command string into a ParsedCommand.
 
@@ -77,15 +144,40 @@ def parse_command(raw: str) -> ParsedCommand:
     cmd = parts[0].lower()
     args = parts[1:]
 
-    if cmd == "/run":
+    entry = _COMMANDS.get(cmd)
+    if entry is None:
+        return ParsedCommand(kind=CommandKind.UNKNOWN, error=f"Unknown command: {cmd}")
+
+    # Subcommand group (e.g. /world add|list|mark)
+    if isinstance(entry, dict):
         if not args:
+            subs = ", ".join(entry)
             return ParsedCommand(
                 kind=CommandKind.UNKNOWN,
-                error="Usage: /run <task-name> [key=value ...]",
+                error=f"Usage: {cmd} <{'|'.join(entry)}> ...",
             )
-        task_name = args[0]
-        kwargs: dict[str, str] = {}
-        for extra in args[1:]:
+        subcmd = args[0].lower()
+        spec = entry.get(subcmd)
+        if spec is None:
+            return ParsedCommand(
+                kind=CommandKind.UNKNOWN,
+                error=f"Unknown {cmd[1:]} subcommand: {subcmd}",
+            )
+        args = args[1:]
+    else:
+        spec = entry
+
+    # Validate required positional args
+    if len(args) < spec.n_args:
+        return ParsedCommand(kind=CommandKind.UNKNOWN, error=spec.usage)
+
+    positional = args[: spec.n_args]
+    extras = args[spec.n_args :]
+
+    # Parse key=value kwargs if the command supports them
+    kwargs: dict[str, str] = {}
+    if spec.has_kwargs:
+        for extra in extras:
             if "=" not in extra:
                 return ParsedCommand(
                     kind=CommandKind.UNKNOWN,
@@ -93,60 +185,5 @@ def parse_command(raw: str) -> ParsedCommand:
                 )
             k, _, v = extra.partition("=")
             kwargs[k.strip()] = v.strip()
-        return ParsedCommand(kind=CommandKind.RUN, args=[task_name], kwargs=kwargs)
 
-    if cmd == "/stop":
-        return ParsedCommand(kind=CommandKind.STOP)
-
-    if cmd == "/restart":
-        return ParsedCommand(kind=CommandKind.RESTART)
-
-    if cmd == "/quit":
-        return ParsedCommand(kind=CommandKind.QUIT)
-
-    if cmd == "/help":
-        return ParsedCommand(kind=CommandKind.HELP)
-
-    if cmd == "/status":
-        return ParsedCommand(kind=CommandKind.STATUS)
-
-    if cmd == "/world":
-        if not args:
-            return ParsedCommand(kind=CommandKind.UNKNOWN, error="Usage: /world <add|list|mark> ...")
-        subcmd = args[0].lower()
-        sub_args = args[1:]
-
-        if subcmd == "add":
-            if len(sub_args) < 3:
-                return ParsedCommand(
-                    kind=CommandKind.UNKNOWN,
-                    error="Usage: /world add <name> <x> <y>. Requires name and coordinates.",
-                )
-            return ParsedCommand(kind=CommandKind.WORLD_ADD, args=sub_args[:3])
-
-        if subcmd == "list":
-            return ParsedCommand(kind=CommandKind.WORLD_LIST)
-
-        if subcmd == "mark":
-            if not sub_args:
-                return ParsedCommand(
-                    kind=CommandKind.UNKNOWN,
-                    error="Usage: /world mark <name>. Requires a name.",
-                )
-            return ParsedCommand(kind=CommandKind.WORLD_MARK, args=[sub_args[0]])
-
-        return ParsedCommand(
-            kind=CommandKind.UNKNOWN,
-            error=f"Unknown world subcommand: {subcmd}",
-        )
-
-    if cmd == "/detail":
-        return ParsedCommand(kind=CommandKind.DETAIL)
-
-    if cmd == "/teleop":
-        return ParsedCommand(kind=CommandKind.TELEOP)
-
-    if cmd == "/estop":
-        return ParsedCommand(kind=CommandKind.ESTOP)
-
-    return ParsedCommand(kind=CommandKind.UNKNOWN, error=f"Unknown command: {cmd}")
+    return ParsedCommand(kind=spec.kind, args=positional, kwargs=kwargs)
