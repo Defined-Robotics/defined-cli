@@ -1,0 +1,70 @@
+{
+  "configById": {
+    "3D!main": {
+      "cameraState": {
+        "distance": 15,
+        "perspective": true,
+        "phi": 60,
+        "target": [0, 0, 0],
+        "thetaOffset": -45
+      },
+      "followMode": "follow-pose",
+      "followTf": "base_link",
+      "scene": {
+        "enableStats": false
+      },
+      "topics": {
+        "/map": {
+          "visible": true
+        },
+        "/scan": {
+          "visible": true,
+          "colorMode": "flat",
+          "flatColor": "#ff0000"
+        },
+        "/odom": {
+          "visible": true
+        },
+        "/global_costmap/costmap": {
+          "visible": false
+        }
+      },
+      "transforms": {
+        "enablePreloading": true
+      }
+    },
+    "Publish!click": {
+      "topicName": "/clicked_point",
+      "datatype": "geometry_msgs/msg/PointStamped",
+      "value": "{\n  \"header\": {\n    \"frame_id\": \"map\"\n  },\n  \"point\": {\n    \"x\": 0.0,\n    \"y\": 0.0,\n    \"z\": 0.0\n  }\n}"
+    },
+    "RawMessages!status": {
+      "topicPath": "/task_status",
+      "diffEnabled": false,
+      "diffMethod": "custom",
+      "diffTopicPath": "",
+      "showFullMessageForDiff": false
+    },
+    "TopicGraph!graph": {
+      "topicFilter": "/task_status|/task_command|/task_reports|/clicked_point|/map|/scan|/odom"
+    }
+  },
+  "globalVariables": {},
+  "userNodes": {},
+  "layout": {
+    "direction": "row",
+    "first": {
+      "direction": "column",
+      "first": "3D!main",
+      "second": "Publish!click",
+      "splitPercentage": 75
+    },
+    "second": {
+      "direction": "column",
+      "first": "RawMessages!status",
+      "second": "TopicGraph!graph",
+      "splitPercentage": 60
+    },
+    "splitPercentage": 70
+  }
+}

@@ -41,3 +41,13 @@ class TargetBase(ABC):
     @abstractmethod
     def resolve_xml_path(self, host_path: Path) -> str:
         """Translate a host-side BT XML path to the path the backend sees."""
+
+    @property
+    def requires_launch(self) -> bool:
+        """True if this target needs ``start()`` before use.
+
+        SimTarget returns True (must bring up Docker stack). A future
+        HwTarget should return False — the robot is already running before
+        the CLI connects, so ``start()`` is a no-op.
+        """
+        return True

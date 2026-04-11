@@ -1,0 +1,30 @@
+# Patrol named Points of Interest
+# Requires POIs to be seeded first: bash sample/seed_world.sh
+# Or use: defined world watch / defined world mark
+name: PatrolPOIs
+description: "Patrol named Points of Interest"
+steps:
+  - verb: go_to
+    params:
+      target: $world.pois.survey-1
+  - verb: report
+    params:
+      message: "arrived_survey_1"
+  - verb: go_to
+    params:
+      target: $world.pois.survey-2
+  - verb: report
+    params:
+      message: "arrived_survey_2"
+  - verb: go_to
+    params:
+      target: $world.pois.survey-3
+  - verb: report
+    params:
+      message: "arrived_survey_3"
+  - verb: go_to
+    params:
+      target: $world.pois.dock
+  - verb: report
+    params:
+      message: "patrol_complete"

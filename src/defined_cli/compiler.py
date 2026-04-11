@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import NoReturn
+from typing import Any, NoReturn
 
 from .errors import CompilationError
 
@@ -55,6 +55,8 @@ def compile_task(
     rdf_yaml: Path,
     verbs_dir: Path | None = None,
     output_dir: Path | None = None,
+    *,
+    param_overrides: dict[str, Any] | None = None,
 ) -> CompileResult:
     """Compile a task YAML to BT XML.
 
@@ -71,6 +73,11 @@ def compile_task(
         output_dir: Directory to write the output XML. Created if it
             does not exist. Defaults to ``work/verb-compiler/build/``
             (the Docker volume mount point).
+        param_overrides: Key/value pairs merged into every step's params
+            at compile time. Matching keys override the task YAML value;
+            unknown keys are silently ignored by the Jinja2 template.
+            All values are strings — BT.CPP parses them from XML attributes.
+            Example: ``{"timeout": "120", "retries": "5"}``.
 
     Returns:
         CompileResult with xml_path, task_name, and step metadata.
@@ -86,7 +93,7 @@ def compile_task(
     robot = _load_rdf(rdf_yaml)
 
     # --- Compile task to BT XML ---
-    task_name, xml, steps = _compile(task_yaml, rdf_yaml, robot, verbs_dir)
+    task_name, xml, steps = _compile(task_yaml, rdf_yaml, robot, verbs_dir, param_overrides)
 
     # --- Write output file ---
     xml_path = _write_output(xml, task_name, output_dir)
@@ -156,6 +163,7 @@ def _compile(
     rdf_yaml: Path,
     robot: object,
     verbs_dir: Path | None,
+    param_overrides: dict[str, Any] | None = None,
 ) -> tuple[str, str, list[StepInfo]]:
     """Run the compilation pipeline: parse → expand → gate → emit.
 
@@ -175,6 +183,8 @@ def _compile(
         for i, step in enumerate(task.get("steps", [])):
             verb_name = step["verb"]
             params = step.get("params", {})
+            if param_overrides:
+                params = {**params, **param_overrides}
 
             verb_data = verb_expander.expand_verb(
                 verb_name, params, verbs_dir=verbs_dir
@@ -184,7 +194,7 @@ def _compile(
                 registry, verb_data["required_capabilities"]
             )
             if not result.passed:
-                available = registry.list_capabilities()
+                available = registry.list_types()
                 raise CompilationError(
                     f"Robot '{robot.name}' lacks capabilities required by "
                     f"verb '{verb_name}': {result.missing}",
