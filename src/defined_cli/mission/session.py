@@ -644,7 +644,13 @@ class DefinedSession:
         Publishes zero velocity to /cmd_vel, signals the mission thread to
         stop, and marks the mission as FAILED. Safe to call from any state.
         """
-        # Send zero-velocity first — hardware safety before anything else
+        # Halt the BT executor first — triggers onHalted() on all running nodes,
+        # which cancels Nav2 goals and stops explore_lite via resume=false.
+        # Must come before zero-velocity so the navigation stack stops issuing
+        # new /cmd_vel commands that would override our stop.
+        self._transport.cancel_task()
+
+        # Send zero-velocity as belt-and-suspenders while Nav2 processes the cancel
         self._transport.publish_velocity(0.0, 0.0)
 
         # Signal the mission thread to abort

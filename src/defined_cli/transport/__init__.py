@@ -79,6 +79,17 @@ class TransportBase(ABC):
         """
         return True
 
+    def cancel_task(self) -> None:
+        """Send a stop command to the BT executor to halt the running tree.
+
+        Publishes ``"STOP"`` to ``/task_command``, which causes the executor
+        to call ``haltTree()`` — triggering ``onHalted()`` on every running
+        BT node (cancels Nav2 goals, stops explore_lite, etc.).
+
+        Optional — no-op default for transports that don't support task
+        cancellation (e.g. replay or test transports).
+        """
+
     def publish_velocity(self, linear_x: float, angular_z: float) -> None:
         """Publish a velocity command to /cmd_vel.
 

@@ -148,6 +148,21 @@ class RosbridgeTransport(TransportBase):
             topic.publish, roslibpy.Message({"data": bt_xml_path}),
         )
 
+    def cancel_task(self) -> None:
+        """Halt the running BT tree by publishing ``"STOP"`` to /task_command.
+
+        The executor calls ``haltTree()`` on receipt, which propagates
+        ``onHalted()`` to every running node (cancels Nav2 goals,
+        stops explore_lite via resume=false, etc.).
+        No-op when not connected.
+        """
+        if self._ros is None or not self._ros.is_connected:
+            return
+        topic = roslibpy.Topic(self._ros, "/task_command", "std_msgs/String")
+        self._reactor.callFromThread(
+            topic.publish, roslibpy.Message({"data": "STOP"}),
+        )
+
     def subscribe_status(self, callback: Callable[[TaskProgress], None]) -> None:
         if self._ros is None or not self._ros.is_connected:
             raise DefinedConnectionError(
