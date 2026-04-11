@@ -113,64 +113,7 @@ _TELEOP_ANGULAR = 0.5  # rad/s
 class DefinedApp(App):
     """Unified TUI for Defined Robotics."""
 
-    CSS = """
-    #status-bar {
-        height: 1;
-        background: $primary-background;
-        color: $text;
-        padding: 0 1;
-    }
-
-    #panel-grid {
-        height: 1fr;
-    }
-
-    .panel-row {
-        height: 1fr;
-    }
-
-    BasePanel {
-        width: 1fr;
-        height: 1fr;
-        border: solid $primary;
-        padding: 0 1;
-        overflow-y: auto;
-    }
-
-    #panel-mission {
-        border: solid $primary;
-    }
-
-    #panel-diagnostics {
-        border: solid $warning;
-    }
-
-    #panel-world {
-        border: solid $accent;
-    }
-
-    #panel-teleop {
-        border: solid $error;
-    }
-
-    #panel-mission:focus,
-    #panel-diagnostics:focus,
-    #panel-world:focus,
-    #panel-teleop:focus {
-        border: heavy $accent;
-    }
-
-    #activity-log {
-        height: auto;
-        max-height: 10;
-        border: solid $surface;
-        padding: 0 1;
-    }
-
-    #command-input {
-        height: 3;
-    }
-    """
+    CSS_PATH = "defined_app.tcss"
 
     BINDINGS = [
         Binding("escape", "focus_command", "Command bar", show=False),

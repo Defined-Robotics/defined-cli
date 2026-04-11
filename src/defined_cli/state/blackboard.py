@@ -75,6 +75,9 @@ class Blackboard:
     def delete(self, key: str) -> None:
         """Delete the value at a dot-path.
 
+        Args:
+            key: Dot-separated path to delete (e.g. ``"world.pois.dock"``).
+
         Raises:
             KeyError: If the path does not exist.
         """

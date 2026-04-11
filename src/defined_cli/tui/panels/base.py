@@ -27,19 +27,36 @@ from typing import TYPE_CHECKING
 
 from textual.widgets import Static
 
+# TYPE_CHECKING guard: these imports are only needed for type annotations.
+# Importing them at runtime would create a circular dependency
+# (panels → session → transport → ...) and pull in heavy optional deps.
 if TYPE_CHECKING:
     from defined_cli.mission.events import SessionEvent
     from defined_cli.mission.session import DefinedSession
 
+# ---------------------------------------------------------------------------
+# Panel registry
+# ---------------------------------------------------------------------------
 
 PANEL_REGISTRY: dict[str, type[BasePanel]] = {}
 """Global registry mapping PANEL_ID → panel class."""
 
 
 def register_panel(cls: type[BasePanel]) -> type[BasePanel]:
-    """Class decorator that registers a panel in ``PANEL_REGISTRY``."""
+    """Class decorator that registers a panel in ``PANEL_REGISTRY``.
+
+    Args:
+        cls: Panel class to register. Must have ``PANEL_ID`` set.
+
+    Returns:
+        The same class, unmodified.
+    """
     PANEL_REGISTRY[cls.PANEL_ID] = cls
     return cls
+
+# ---------------------------------------------------------------------------
+# BasePanel
+# ---------------------------------------------------------------------------
 
 
 class BasePanel(Static):

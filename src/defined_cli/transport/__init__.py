@@ -54,27 +54,58 @@ class TransportBase(ABC):
     def subscribe_reports(self, callback: Callable[[str], None]) -> None:
         """Subscribe to /task_reports and deliver message strings to callback.
 
-        Default implementation is a no-op (backwards compat).
+        Optional — no-op default so that transports that pre-date report
+        subscriptions remain compatible without change.
+
+        Args:
+            callback: Called with each report message string.
         """
 
     def wait_for_executor(self, timeout: float = 60.0) -> bool:
         """Wait for the BT executor to publish an IDLE heartbeat.
 
         Returns True when the executor is ready, False on timeout.
-        Default implementation returns True immediately (backwards compat).
+
+        Optional — default returns True immediately (treats the executor
+        as always ready). **Override this in real transports.** The
+        session treats a False return as a hard error and will not send
+        the task, so an incorrect True here silences readiness failures.
+
+        Args:
+            timeout: Seconds to wait before giving up.
+
+        Returns:
+            True if the executor became ready within *timeout*, else False.
         """
         return True
 
     def publish_velocity(self, linear_x: float, angular_z: float) -> None:
         """Publish a velocity command to /cmd_vel.
 
-        Default is a no-op for backends that don't support velocity control.
+        Optional — no-op default for transports that don't support
+        direct velocity control (e.g. replay or test transports).
+
+        Args:
+            linear_x: Forward/backward velocity in m/s.
+            angular_z: Rotation velocity in rad/s.
         """
 
     def fetch_pose(self, timeout: float = 5.0, topic: str = "/odom") -> tuple[float, float]:
         """Fetch the robot's current (x, y) position via the existing connection.
 
-        Default raises NotImplementedError. Override in subclasses.
+        Optional — raises ``NotImplementedError`` by default. Override in
+        transports that support live pose queries.
+
+        Args:
+            timeout: Seconds to wait for a pose message.
+            topic: ROS2 topic to read (e.g. ``"/odom"`` or ``"/amcl_pose"``).
+
+        Returns:
+            ``(x, y)`` position in the map frame.
+
+        Raises:
+            NotImplementedError: If this transport does not support pose queries.
+            TimeoutError: If no pose is received within *timeout*.
         """
         raise NotImplementedError("fetch_pose not supported by this transport")
 

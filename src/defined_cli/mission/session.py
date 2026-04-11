@@ -6,6 +6,24 @@ execution, state persistence, and event notification.
 
 This module has zero imports from click, rich, or textual.
 
+Flow
+----
+``connect()``
+    DISCONNECTED → CONNECTING → CONNECTED (starts reconnect watchdog)
+
+``run_mission(task, rdf)``
+    Sets COMPILING immediately (under lock), then spawns a daemon thread:
+      COMPILING → resolve POI references → compile YAML → BT XML
+      DEPLOYING → wait for executor IDLE heartbeat → deploy XML
+      RUNNING   → monitor /task_status until SUCCESS/FAILURE/timeout
+      SUCCEEDED / FAILED (saved to StateStore)
+
+``stop_mission()``
+    Signals the daemon thread to abort; transition → FAILED.
+
+``disconnect()``
+    Stops the watchdog, closes transport, sets DISCONNECTED.
+
 Usage (script):
     session = DefinedSession(target=SimTarget(), transport=RosbridgeTransport(),
                              store=StateStore(), compile_fn=compile_task)
@@ -21,6 +39,7 @@ Usage (TUI):
 
 from __future__ import annotations
 
+import logging
 import tempfile
 import threading
 import time
@@ -31,6 +50,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import yaml
+
+_log = logging.getLogger(__name__)
 
 from defined_cli.mission.events import ConnectionStatus, MissionStatus, SessionEvent
 from defined_cli.mission.resolver import ResolverError, resolve_references
@@ -47,6 +68,7 @@ if TYPE_CHECKING:
 _RECONNECT_INTERVAL = 2.0
 _RECONNECT_MAX_BACKOFF = 30.0
 _DEFAULT_TIMEOUT = 300.0
+_EXECUTOR_WAIT_TIMEOUT = 60.0
 _CONNECT_RETRIES = 30
 _CONNECT_DELAY = 3.0
 
@@ -132,7 +154,7 @@ class DefinedSession:
             try:
                 cb(event)
             except Exception:
-                pass  # never let a listener crash the session
+                _log.warning("Listener %s raised an exception", cb, exc_info=True)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -167,7 +189,7 @@ class DefinedSession:
         try:
             self._transport.disconnect()
         except Exception:
-            pass
+            _log.debug("Transport disconnect raised an exception", exc_info=True)
         with self._lock:
             self._connection_status = ConnectionStatus.DISCONNECTED
 
@@ -284,6 +306,9 @@ class DefinedSession:
                 MissionStatus.RUNNING,
             ):
                 raise RuntimeError("A mission is already running. Use stop_mission() first.")
+            # Mark as COMPILING before releasing the lock so that a
+            # concurrent call cannot also pass the guard above.
+            self._mission_status = MissionStatus.COMPILING
             self._last_task = task
             self._last_rdf = rdf
             self._last_verbs_dir = verbs_dir
@@ -317,6 +342,81 @@ class DefinedSession:
             raise RuntimeError(msg)
         self.run_mission(task, rdf, verbs_dir=verbs_dir, param_overrides=param_overrides)
 
+    def _resolve_task(
+        self,
+        task_yaml: Path,
+        rdf_yaml: Path,
+        verbs_dir: Path | None,
+        param_overrides: dict | None,
+    ) -> CompileResult:
+        """Resolve POI references and compile task YAML to BT XML.
+
+        If the task contains ``$world.pois.*`` references, writes a
+        resolved copy to a temp file, compiles it, then cleans up.
+
+        Args:
+            task_yaml: Path to the task YAML file.
+            rdf_yaml: Path to the robot RDF YAML file.
+            verbs_dir: Optional directory of verb templates.
+            param_overrides: Optional key/value compile-time overrides.
+
+        Returns:
+            CompileResult with the generated XML path and step list.
+
+        Raises:
+            ResolverError: If a POI reference cannot be resolved.
+        """
+        task_dict = yaml.safe_load(task_yaml.read_text())
+        with self._lock:
+            pois = dict(self._snapshot.world.pois)
+        bb = Blackboard(data={"world": {"pois": pois}})
+        resolved_dict = resolve_references(task_dict, bb)
+
+        if resolved_dict != task_dict:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".yaml", dir=task_yaml.parent,
+                delete=False, prefix=f".{task_yaml.stem}_resolved_",
+            ) as tmp:
+                yaml.dump(resolved_dict, tmp)
+                resolved_path = Path(tmp.name)
+            try:
+                return self._compile_fn(
+                    resolved_path, rdf_yaml, verbs_dir, None,
+                    param_overrides=param_overrides,
+                )
+            finally:
+                resolved_path.unlink(missing_ok=True)
+
+        return self._compile_fn(
+            task_yaml, rdf_yaml, verbs_dir, None,
+            param_overrides=param_overrides,
+        )
+
+    def _begin_mission(self, record: MissionRecord, mission_id: str) -> None:
+        """Initialize mission state. Must be called with ``_lock`` held."""
+        self._current_mission = record
+        self._mission_status = MissionStatus.COMPILING
+        self._step_progress = None
+        self._last_error = None
+        self._snapshot.robot.current = RobotStatus.ON_MISSION
+        self._snapshot.robot.last_mission_id = mission_id
+        self._store.save(self._snapshot)
+
+    def _finalize_mission(self, record: MissionRecord, outcome: str) -> None:
+        """Persist final mission state. Must be called with ``_lock`` held."""
+        record.status = outcome
+        record.completed_at = datetime.now(timezone.utc).isoformat()
+        record.result = outcome
+        self._snapshot.mission_history.append(record)
+        self._snapshot.robot.current = RobotStatus.IDLE
+        self._snapshot.robot.last_mission_result = outcome
+        self._current_mission = record
+        self._mission_status = (
+            MissionStatus.SUCCEEDED if outcome == "SUCCESS"
+            else MissionStatus.FAILED
+        )
+        self._store.save(self._snapshot)
+
     def _run_mission_thread(
         self,
         task_yaml: Path,
@@ -341,13 +441,7 @@ class DefinedSession:
         )
 
         with self._lock:
-            self._current_mission = record
-            self._mission_status = MissionStatus.COMPILING
-            self._step_progress = None
-            self._last_error = None
-            self._snapshot.robot.current = RobotStatus.ON_MISSION
-            self._snapshot.robot.last_mission_id = mission_id
-            self._store.save(self._snapshot)
+            self._begin_mission(record, mission_id)
 
         self._emit("mission", f"Mission {mission_id} started")
 
@@ -355,33 +449,7 @@ class DefinedSession:
         try:
             # Compile phase
             self._emit("mission", f"Compiling {task_yaml.name}...")
-
-            # Resolve POI references
-            task_dict = yaml.safe_load(task_yaml.read_text())
-            with self._lock:
-                pois = dict(self._snapshot.world.pois)
-            bb = Blackboard(data={"world": {"pois": pois}})
-            resolved_dict = resolve_references(task_dict, bb)
-
-            if resolved_dict != task_dict:
-                with tempfile.NamedTemporaryFile(
-                    mode="w", suffix=".yaml", dir=task_yaml.parent,
-                    delete=False, prefix=f".{task_yaml.stem}_resolved_",
-                ) as tmp:
-                    yaml.dump(resolved_dict, tmp)
-                    resolved_path = Path(tmp.name)
-                try:
-                    result = self._compile_fn(
-                        resolved_path, rdf_yaml, verbs_dir, None,
-                        param_overrides=param_overrides,
-                    )
-                finally:
-                    resolved_path.unlink(missing_ok=True)
-            else:
-                result = self._compile_fn(
-                    task_yaml, rdf_yaml, verbs_dir, None,
-                    param_overrides=param_overrides,
-                )
+            result = self._resolve_task(task_yaml, rdf_yaml, verbs_dir, param_overrides)
 
             with self._lock:
                 self._steps = list(result.steps)
@@ -399,7 +467,10 @@ class DefinedSession:
 
             # Deploy phase
             self._emit("mission", "Waiting for executor...")
-            self._transport.wait_for_executor(timeout=60.0)
+            if not self._transport.wait_for_executor(timeout=_EXECUTOR_WAIT_TIMEOUT):
+                raise TimeoutError(
+                    f"BT executor did not become ready within {_EXECUTOR_WAIT_TIMEOUT}s"
+                )
 
             xml_path_str = self._target.resolve_xml_path(result.xml_path)
 
@@ -440,6 +511,7 @@ class DefinedSession:
                 suggestion="Check POI names with /world list",
             )
         except Exception as exc:
+            _log.exception("Unexpected error in mission thread")
             with self._lock:
                 self._last_error = str(exc)
             self._emit(
@@ -449,18 +521,7 @@ class DefinedSession:
             )
         finally:
             with self._lock:
-                record.status = outcome
-                record.completed_at = datetime.now(timezone.utc).isoformat()
-                record.result = outcome
-                self._snapshot.mission_history.append(record)
-                self._snapshot.robot.current = RobotStatus.IDLE
-                self._snapshot.robot.last_mission_result = outcome
-                self._current_mission = record
-                self._mission_status = (
-                    MissionStatus.SUCCEEDED if outcome == "SUCCESS"
-                    else MissionStatus.FAILED
-                )
-                self._store.save(self._snapshot)
+                self._finalize_mission(record, outcome)
 
             self._emit("mission", f"Mission {outcome.lower()}: {mission_id}")
 

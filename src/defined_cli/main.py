@@ -79,7 +79,9 @@ def _launch_tui(
     from .tui.defined_app import DefinedApp
 
     if target == "hw":
-        raise NotImplementedError("Hardware target not yet implemented. Use --target sim.")
+        raise click.UsageError(
+            "Hardware target is not yet implemented. Use --target sim."
+        )
     target_obj = SimTarget()
     transport_obj = RosbridgeTransport(host=host, port=port)
     store = StateStore()

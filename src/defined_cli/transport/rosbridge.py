@@ -1,4 +1,24 @@
-"""RosbridgeTransport — WebSocket connection to rosbridge_server."""
+"""RosbridgeTransport — WebSocket connection to rosbridge_server.
+
+roslibpy uses the Twisted event loop internally. Twisted is a Python
+async networking framework that runs its own thread-based reactor. All
+roslibpy publish/subscribe calls **must** be dispatched via
+``reactor.callFromThread()``; calling them directly from a non-Twisted
+thread causes silent failures or data corruption.
+
+``_get_reactor()`` starts the Twisted reactor in a daemon thread once
+per process and returns it. All methods in this module use it as the
+single dispatch point.
+
+Transport boundary note
+-----------------------
+``fetch_pose()`` and the helper functions in ``transport/pose.py`` overlap:
+``pose.py`` opens a one-shot connection (connect → get one message → close),
+while ``fetch_pose()`` here reuses the existing persistent connection.
+``pose.py`` is still used by the standalone CLI commands (``defined world
+mark/watch``) that run without a live session. Both modules share the same
+underlying rosbridge protocol.
+"""
 
 from __future__ import annotations
 
@@ -12,9 +32,16 @@ import roslibpy
 from defined_cli.errors import TransportConnectionError as DefinedConnectionError
 from defined_cli.transport import TaskProgress, TransportBase
 
-# roslibpy uses a global Twisted reactor. We start it once and reuse it.
+# ---------------------------------------------------------------------------
+# Twisted reactor — one per process
+# ---------------------------------------------------------------------------
+
+# roslibpy drives its WebSocket I/O through the Twisted event loop (reactor).
+# The reactor must run in a dedicated thread; once started it cannot be
+# stopped and restarted. We hold a module-level reference so all
+# RosbridgeTransport instances share the same running reactor.
 _reactor_lock = threading.Lock()
-_reactor_ref: object | None = None  # holds the Twisted reactor once started
+_reactor_ref: object | None = None
 
 
 def _get_reactor() -> object:
@@ -39,6 +66,11 @@ def _get_reactor() -> object:
             time.sleep(0.01)
         _reactor_ref = reactor
         return reactor
+
+
+# ---------------------------------------------------------------------------
+# RosbridgeTransport
+# ---------------------------------------------------------------------------
 
 
 class RosbridgeTransport(TransportBase):
@@ -241,9 +273,15 @@ class RosbridgeTransport(TransportBase):
     def wait_ready(self, timeout: float = 60.0) -> bool:
         """Wait for Nav2 to be ready by checking for the navigate_to_pose action topics.
 
-        Polls the rosbridge topic list for '/navigate_to_pose/_action/status'
-        which indicates the action server is up. Returns True when found,
+        Polls the rosbridge topic list for bt_navigator topics which
+        indicates the action server is up. Returns True when found,
         False on timeout. Non-fatal — the task may still work for non-nav verbs.
+
+        Note: This polls via ``get_topics()`` every 2 s rather than
+        subscribing to a status topic, because Nav2 doesn't publish a
+        dedicated readiness event. The 2 s interval keeps CPU usage low
+        at the cost of up to 2 s of extra wait. A future improvement
+        would subscribe to ``/bt_navigator/transition_event`` instead.
         """
         if self._ros is None or not self._ros.is_connected:
             return False
