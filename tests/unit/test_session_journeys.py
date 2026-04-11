@@ -1,4 +1,4 @@
-"""End-to-end integration tests for DefinedSession — user journey based.
+"""User-journey tests for DefinedSession — mock transport, real state.
 
 Each test class represents a real user journey:
 - Launch TUI, run a patrol, watch it succeed
@@ -9,7 +9,9 @@ Each test class represents a real user journey:
 - POIs and history survive session restart
 - Robot reports collected during mission
 
-All tests use a mock transport + real StateStore with tmp_path.
+These use mock transport + real StateStore with tmp_path to validate
+session-level logic without Docker/rosbridge. For true e2e tests
+against a running sim stack, see ``tests/integration/``.
 """
 
 from __future__ import annotations
@@ -327,6 +329,8 @@ class TestEmergencyStopJourney:
 
         session.emergency_stop()
 
+        # BT executor told to stop before zero velocity
+        mock_transport.cancel_task.assert_called_once()
         # Zero velocity published
         mock_transport.publish_velocity.assert_called_with(0.0, 0.0)
 
@@ -341,8 +345,9 @@ class TestEmergencyStopJourney:
     def test_estop_safe_when_idle(self, session, mock_transport, tmp_path):
         session.connect()
 
-        # E-stop when no mission running
+        # E-stop when no mission running — cancel_task still called (belt-and-suspenders)
         session.emergency_stop()
+        mock_transport.cancel_task.assert_called_once()
         mock_transport.publish_velocity.assert_called_with(0.0, 0.0)
 
         # Can still run a mission afterwards
