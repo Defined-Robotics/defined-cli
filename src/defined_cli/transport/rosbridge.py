@@ -6,6 +6,9 @@ roslibpy publish/subscribe calls **must** be dispatched via
 ``reactor.callFromThread()``; calling them directly from a non-Twisted
 thread causes silent failures or data corruption.
 
+Cleanup exceptions during disconnect are logged at DEBUG level rather
+than silently swallowed — helps diagnose transport teardown issues.
+
 ``_get_reactor()`` starts the Twisted reactor in a daemon thread once
 per process and returns it. All methods in this module use it as the
 single dispatch point.
@@ -23,11 +26,14 @@ underlying rosbridge protocol.
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 from collections.abc import Callable
 
 import roslibpy
+
+_log = logging.getLogger(__name__)
 
 from defined_cli.errors import TransportConnectionError as DefinedConnectionError
 from defined_cli.transport import TaskProgress, TransportBase
@@ -121,14 +127,14 @@ class RosbridgeTransport(TransportBase):
             try:
                 self._status_topic.unsubscribe()
             except Exception:
-                pass
+                _log.debug("Failed to unsubscribe status topic", exc_info=True)
             self._status_topic = None
         if self._ros is not None:
             try:
                 if self._ros.is_connected:
                     self._ros.close()
             except Exception:
-                pass
+                _log.debug("Failed to close rosbridge connection", exc_info=True)
             self._ros = None
 
     def send_task(self, bt_xml_path: str) -> None:
@@ -164,7 +170,7 @@ class RosbridgeTransport(TransportBase):
                 )
                 callback(progress)
             except (json.JSONDecodeError, KeyError):
-                pass  # skip malformed messages
+                _log.debug("Malformed status message, skipping", exc_info=True)
 
         self._reactor.callFromThread(self._status_topic.subscribe, _on_message)
 
@@ -196,14 +202,14 @@ class RosbridgeTransport(TransportBase):
                 if data.get("status") == "IDLE":
                     ready.set()
             except (json.JSONDecodeError, KeyError):
-                pass
+                _log.debug("Malformed executor status message", exc_info=True)
 
         self._reactor.callFromThread(topic.subscribe, _on_idle)
         result = ready.wait(timeout=timeout)
         try:
             self._reactor.callFromThread(topic.unsubscribe)
         except Exception:
-            pass
+            _log.debug("Failed to unsubscribe executor topic", exc_info=True)
         return result
 
     def fetch_pose(self, timeout: float = 5.0, topic: str = "/odom") -> tuple[float, float]:
@@ -233,7 +239,7 @@ class RosbridgeTransport(TransportBase):
                 result["y"] = pos["y"]
                 got_pose.set()
             except (KeyError, TypeError):
-                pass
+                _log.debug("Unexpected pose message format", exc_info=True)
 
         msg_type = {
             "/odom": "nav_msgs/Odometry",
@@ -246,7 +252,7 @@ class RosbridgeTransport(TransportBase):
             try:
                 self._reactor.callFromThread(pose_topic.unsubscribe)
             except Exception:
-                pass
+                _log.debug("Failed to unsubscribe pose topic after timeout", exc_info=True)
             raise TimeoutError(
                 f"No pose received on {topic} within {timeout}s. Is SLAM/AMCL running?"
             )
@@ -254,7 +260,7 @@ class RosbridgeTransport(TransportBase):
         try:
             self._reactor.callFromThread(pose_topic.unsubscribe)
         except Exception:
-            pass
+            _log.debug("Failed to unsubscribe pose topic", exc_info=True)
 
         return result["x"], result["y"]
 
@@ -271,29 +277,42 @@ class RosbridgeTransport(TransportBase):
         )
 
     def wait_ready(self, timeout: float = 60.0) -> bool:
-        """Wait for Nav2 to be ready by checking for the navigate_to_pose action topics.
+        """Wait for Nav2 bt_navigator to reach ACTIVE lifecycle state.
 
-        Polls the rosbridge topic list for bt_navigator topics which
-        indicates the action server is up. Returns True when found,
-        False on timeout. Non-fatal — the task may still work for non-nav verbs.
+        Subscribes to ``/bt_navigator/transition_event`` and waits for a
+        lifecycle transition whose ``goal_state`` is ACTIVE (id=3).
+        Returns True when the navigator is active, False on timeout.
+        Non-fatal — the task may still work for non-nav verbs.
 
-        Note: This polls via ``get_topics()`` every 2 s rather than
-        subscribing to a status topic, because Nav2 doesn't publish a
-        dedicated readiness event. The 2 s interval keeps CPU usage low
-        at the cost of up to 2 s of extra wait. A future improvement
-        would subscribe to ``/bt_navigator/transition_event`` instead.
+        Args:
+            timeout: Seconds to wait before giving up.
+
+        Returns:
+            True if bt_navigator reached ACTIVE within *timeout*.
         """
         if self._ros is None or not self._ros.is_connected:
             return False
 
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
+        ready = threading.Event()
+        topic = roslibpy.Topic(
+            self._ros,
+            "/bt_navigator/transition_event",
+            "lifecycle_msgs/TransitionEvent",
+        )
+
+        def _on_transition(msg: dict) -> None:
             try:
-                topics = self._ros.get_topics()
-                topic_names = [t["name"] if isinstance(t, dict) else t for t in topics]
-                if any("/bt_navigator" in t for t in topic_names):
-                    return True
-            except Exception:
-                pass
-            time.sleep(2.0)
-        return False
+                goal = msg.get("goal_state", {})
+                # lifecycle_msgs ACTIVE state id is 3
+                if goal.get("id") == 3 or goal.get("label") == "active":
+                    ready.set()
+            except (KeyError, TypeError, AttributeError):
+                _log.debug("Unexpected transition event format", exc_info=True)
+
+        self._reactor.callFromThread(topic.subscribe, _on_transition)
+        result = ready.wait(timeout=timeout)
+        try:
+            self._reactor.callFromThread(topic.unsubscribe)
+        except Exception:
+            _log.debug("Failed to unsubscribe transition topic", exc_info=True)
+        return result

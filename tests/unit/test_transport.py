@@ -157,46 +157,82 @@ class TestSubscribeStatus:
 
 
 class TestWaitReady:
+
+    @patch("defined_cli.transport.rosbridge.roslibpy.Topic")
     @patch("defined_cli.transport.rosbridge.roslibpy.Ros")
     @patch("defined_cli.transport.rosbridge._get_reactor")
-    def test_ready_when_nav2_topics_present(self, mock_get_reactor, MockRos, transport):
+    def test_ready_when_bt_navigator_transitions_to_active(
+        self, mock_get_reactor, MockRos, MockTopic, transport,
+    ):
         mock_reactor = MagicMock()
         mock_reactor.callFromThread.side_effect = lambda fn, *a, **kw: fn(*a, **kw)
         mock_get_reactor.return_value = mock_reactor
-        mock_ros = MockRos.return_value
-        _patch_connect(mock_ros)
-        mock_ros.get_topics.return_value = [
-            "/cmd_vel", "/odom", "/bt_navigator/transition_event"
-        ]
+        _patch_connect(MockRos.return_value)
         transport.connect()
+
+        # Inject an ACTIVE transition when the callback subscribes
+        def _fire_active(callback):
+            callback({
+                "transition": {"id": 3, "label": "activate"},
+                "start_state": {"id": 2, "label": "inactive"},
+                "goal_state": {"id": 3, "label": "active"},
+            })
+        MockTopic.return_value.subscribe.side_effect = _fire_active
         assert transport.wait_ready(timeout=5.0) is True
 
+    @patch("defined_cli.transport.rosbridge.roslibpy.Topic")
     @patch("defined_cli.transport.rosbridge.roslibpy.Ros")
     @patch("defined_cli.transport.rosbridge._get_reactor")
-    def test_not_ready_when_no_nav2_topics(self, mock_get_reactor, MockRos, transport):
+    def test_not_ready_on_timeout(self, mock_get_reactor, MockRos, MockTopic, transport):
         mock_reactor = MagicMock()
         mock_reactor.callFromThread.side_effect = lambda fn, *a, **kw: fn(*a, **kw)
         mock_get_reactor.return_value = mock_reactor
-        mock_ros = MockRos.return_value
-        _patch_connect(mock_ros)
-        mock_ros.get_topics.return_value = ["/cmd_vel", "/odom"]
+        _patch_connect(MockRos.return_value)
         transport.connect()
+
+        # Subscribe but never fire — timeout expected
+        MockTopic.return_value.subscribe.side_effect = lambda cb: None
         assert transport.wait_ready(timeout=0.1) is False
 
+    @patch("defined_cli.transport.rosbridge.roslibpy.Topic")
     @patch("defined_cli.transport.rosbridge.roslibpy.Ros")
     @patch("defined_cli.transport.rosbridge._get_reactor")
-    def test_returns_false_on_error(self, mock_get_reactor, MockRos, transport):
+    def test_ignores_non_active_transitions(self, mock_get_reactor, MockRos, MockTopic, transport):
         mock_reactor = MagicMock()
         mock_reactor.callFromThread.side_effect = lambda fn, *a, **kw: fn(*a, **kw)
         mock_get_reactor.return_value = mock_reactor
-        mock_ros = MockRos.return_value
-        _patch_connect(mock_ros)
-        mock_ros.get_topics.side_effect = Exception("connection lost")
+        _patch_connect(MockRos.return_value)
         transport.connect()
-        assert transport.wait_ready(timeout=0.1) is False
+
+        # Fire an inactive transition first, then active
+        def _fire_both(callback):
+            callback({
+                "goal_state": {"id": 2, "label": "inactive"},
+            })
+            callback({
+                "goal_state": {"id": 3, "label": "active"},
+            })
+        MockTopic.return_value.subscribe.side_effect = _fire_both
+        assert transport.wait_ready(timeout=5.0) is True
 
     def test_returns_false_when_not_connected(self, transport):
         assert transport.wait_ready(timeout=1.0) is False
+
+    @patch("defined_cli.transport.rosbridge.roslibpy.Topic")
+    @patch("defined_cli.transport.rosbridge.roslibpy.Ros")
+    @patch("defined_cli.transport.rosbridge._get_reactor")
+    def test_unsubscribes_after_ready(self, mock_get_reactor, MockRos, MockTopic, transport):
+        mock_reactor = MagicMock()
+        mock_reactor.callFromThread.side_effect = lambda fn, *a, **kw: fn(*a, **kw)
+        mock_get_reactor.return_value = mock_reactor
+        _patch_connect(MockRos.return_value)
+        transport.connect()
+
+        def _fire_active(callback):
+            callback({"goal_state": {"id": 3, "label": "active"}})
+        MockTopic.return_value.subscribe.side_effect = _fire_active
+        transport.wait_ready(timeout=5.0)
+        MockTopic.return_value.unsubscribe.assert_called_once()
 
 
 class TestPublishVelocity:
