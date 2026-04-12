@@ -7,7 +7,7 @@ Entry points:
 - ``defined world``     — POI management (add, list, mark, watch)
 
 Usage:
-    defined --rdf robot.rdf.yaml
+    defined --manifest defined.yaml --rdf robot.rdf.yaml
     defined compile tasks/patrol.task.yaml --rdf robot.rdf.yaml
     defined world add dock 0.0 0.0
 """
@@ -22,6 +22,7 @@ from rich.console import Console
 from . import __version__
 from .compiler import compile_task
 from .errors import DefinedError
+from .launcher import create_session, try_load_manifest, try_load_world
 from .state.store import StateStore
 
 _console = Console(stderr=True)
@@ -48,8 +49,17 @@ def _show_error(error: DefinedError, *, verbose: bool = False) -> None:
 @click.option("--host", default="localhost", help="Rosbridge host.")
 @click.option("--port", default=9090, type=int, help="Rosbridge port.")
 @click.option("--rdf", type=click.Path(exists=True, path_type=Path), default=None, help="Robot RDF YAML.")
+@click.option("--manifest", type=click.Path(exists=True, path_type=Path), default=None, help="Path to defined.yaml.")
 @click.pass_context
-def cli(ctx: click.Context, verbose: bool, target: str, host: str, port: int, rdf: Path | None) -> None:
+def cli(
+    ctx: click.Context,
+    verbose: bool,
+    target: str,
+    host: str,
+    port: int,
+    rdf: Path | None,
+    manifest: Path | None,
+) -> None:
     """Defined Robotics platform — unified mission control.
 
     Run with no subcommand to launch the interactive TUI.
@@ -60,37 +70,10 @@ def cli(ctx: click.Context, verbose: bool, target: str, host: str, port: int, rd
     ctx.obj["host"] = host
     ctx.obj["port"] = port
     ctx.obj["rdf"] = rdf
+    ctx.obj["manifest"] = manifest
 
     if ctx.invoked_subcommand is None:
-        _launch_tui(target=target, host=host, port=port, rdf=rdf)
-
-
-def _select_target(
-    *,
-    manifest: object | None = None,
-    target_flag: str = "sim",
-    world_env: str | None = None,
-    port: int = 9090,
-) -> object:
-    """Select the appropriate target based on manifest and CLI flags.
-
-    When a manifest has a ``sim`` section with an image, use
-    DockerImageTarget (pre-built image via ``docker run``).
-    Otherwise fall back to SimTarget (docker compose).
-
-    This function is deliberately import-lazy to keep module load fast.
-    """
-    from .manifest import ProjectManifest
-    from .target.docker_image import DockerImageTarget
-    from .target.sim import SimTarget
-
-    if manifest is not None and isinstance(manifest, ProjectManifest) and manifest.sim is not None:
-        return DockerImageTarget(
-            image=manifest.sim.image,
-            world_env=world_env,
-            port=port,
-        )
-    return SimTarget()
+        _launch_tui(target=target, host=host, port=port, rdf=rdf, manifest_path=manifest)
 
 
 def _launch_tui(
@@ -99,26 +82,18 @@ def _launch_tui(
     host: str = "localhost",
     port: int = 9090,
     rdf: Path | None = None,
+    manifest_path: Path | None = None,
 ) -> None:
     """Create a DefinedSession and launch the Textual TUI."""
-    from .manifest import ManifestNotFoundError, discover_manifest, load_manifest
-    from .mission.session import DefinedSession
-    from .state.blackboard import Blackboard
-    from .state.world_loader import load_world, seed_blackboard
-    from .transport.rosbridge import RosbridgeTransport
     from .tui.defined_app import DefinedApp
 
-    # --- Manifest discovery (fail-soft) ---
-    manifest = None
-    verbs_dir = None
-    try:
-        manifest_path = discover_manifest()
-        manifest = load_manifest(manifest_path)
-        _console.print(f"[dim]Using project: {manifest.project.name} ({manifest_path})[/]")
-    except ManifestNotFoundError:
-        pass  # No manifest — fall back to CLI flags
+    # --- Manifest loading (fail-soft) ---
+    manifest = try_load_manifest(manifest_path)
+    if manifest is not None:
+        _console.print(f"[dim]Using project: {manifest.project.name}[/]")
 
     # Manifest values provide defaults; CLI flags override when explicitly set
+    verbs_dir: Path | None = None
     if manifest:
         if rdf is None:
             rdf = manifest.robot.rdf
@@ -130,50 +105,23 @@ def _launch_tui(
             "Hardware target is not yet implemented. Use --target sim."
         )
 
-    # --- Target selection ---
-    world_env = None
-    if manifest and manifest.world is not None and manifest.world.file.exists():
-        try:
-            world = load_world(manifest.world.file)
-            if world.sim is not None:
-                world_env = world.sim.environment
-        except Exception:
-            world = None
-    else:
-        world = None
+    # --- World loading (soft error — sim can start without it) ---
+    world = try_load_world(manifest)
+    if world is not None:
+        _console.print(f"[dim]Loaded world: {world.name} ({len(world.pois)} POIs)[/]")
+    elif manifest is not None and manifest.world is not None:
+        _console.print("[yellow]Warning: Could not load world file — continuing without POIs.[/]")
 
-    target_obj = _select_target(
+    # --- Session creation ---
+    session = create_session(
         manifest=manifest,
-        target_flag=target,
-        world_env=world_env,
+        world=world,
+        host=host,
         port=port,
     )
-    transport_obj = RosbridgeTransport(host=host, port=port)
-    store = StateStore()
 
-    # --- World loading (seed blackboard with POIs) ---
-    if world is not None:
-        try:
-            snapshot = store.load()
-            bb = Blackboard(data={"world": {"pois": snapshot.world.pois}})
-            seed_blackboard(world, bb)
-            snapshot.world.pois = bb.list_pois()
-            store.save(snapshot)
-            _console.print(f"[dim]Loaded world: {world.name} ({len(world.pois)} POIs)[/]")
-        except Exception as exc:
-            _console.print(f"[yellow]Warning: Could not load world file: {exc}[/]")
-
-    session = DefinedSession(
-        target=target_obj,
-        transport=transport_obj,
-        store=store,
-        compile_fn=compile_task,
-    )
-
-    # Don't block on connect — TUI will appear immediately and
-    # show "Disconnected" until the background connect succeeds.
     try:
-        app = DefinedApp(session, rdf=rdf)
+        app = DefinedApp(session, rdf=rdf, verbs_dir=verbs_dir)
         app.run()
     except KeyboardInterrupt:
         pass
