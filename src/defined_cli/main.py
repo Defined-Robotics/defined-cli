@@ -14,16 +14,21 @@ Usage:
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import click
 from rich.console import Console
+from rich.table import Table
 
 from . import __version__
 from .compiler import compile_task
 from .errors import DefinedError
 from .launcher import create_session, try_load_manifest, try_load_world
+from .state.blackboard import Blackboard
 from .state.store import StateStore
+from .transport.pose import fetch_robot_pose, subscribe_clicked_point
+from .tui.defined_app import DefinedApp
 
 _console = Console(stderr=True)
 
@@ -85,8 +90,6 @@ def _launch_tui(
     manifest_path: Path | None = None,
 ) -> None:
     """Create a DefinedSession and launch the Textual TUI."""
-    from .tui.defined_app import DefinedApp
-
     # --- Manifest loading (fail-soft) ---
     manifest = try_load_manifest(manifest_path)
     if manifest is not None:
@@ -176,8 +179,6 @@ def world() -> None:
 @click.option("--radius", default=0.5, type=float, show_default=True)
 def world_add(name: str, x: float, y: float, poi_type: str, radius: float) -> None:
     """Add or update a Point of Interest."""
-    from .state.blackboard import Blackboard
-
     store = StateStore()
     snapshot = store.load()
     bb = Blackboard(data={"world": {"pois": snapshot.world.pois}})
@@ -190,8 +191,6 @@ def world_add(name: str, x: float, y: float, poi_type: str, radius: float) -> No
 @world.command("list")
 def world_list() -> None:
     """List all defined Points of Interest."""
-    from rich.table import Table
-
     store = StateStore()
     snapshot = store.load()
     pois = snapshot.world.pois
@@ -227,9 +226,6 @@ def world_list() -> None:
 @click.option("--port", default=9090, type=int)
 def world_mark(name: str, poi_type: str, radius: float, host: str, port: int) -> None:
     """Mark the robot's current position as a named POI."""
-    from .state.blackboard import Blackboard
-    from .transport.pose import fetch_robot_pose
-
     try:
         x, y = fetch_robot_pose(host=host, port=port)
     except (TimeoutError, ConnectionError) as exc:
@@ -252,9 +248,6 @@ def world_mark(name: str, poi_type: str, radius: float, host: str, port: int) ->
 @click.option("--port", default=9090, type=int)
 def world_watch(poi_type: str, radius: float, host: str, port: int) -> None:
     """Watch for map clicks and save as POIs."""
-    from .state.blackboard import Blackboard
-    from .transport.pose import subscribe_clicked_point
-
     store = StateStore()
     count = 0
 
@@ -274,7 +267,6 @@ def world_watch(poi_type: str, radius: float, host: str, port: int) -> None:
         _console.print("[dim]Watching for clicks on /clicked_point… (Ctrl+C to stop)[/]")
         ros, topic = subscribe_clicked_point(host=host, port=port, callback=_on_click)
 
-        import threading
         stop = threading.Event()
         try:
             stop.wait()
