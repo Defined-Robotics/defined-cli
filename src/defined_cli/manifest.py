@@ -1,11 +1,11 @@
-"""Project manifest (defined.yaml) schema and discovery.
+"""Project manifest (defined.yaml) schema and loading.
 
 The manifest is the entry point for a Defined Robotics project. It tells
 the CLI where to find the robot definition, world file, verb overrides,
 and simulation image.
 
-Auto-discovery walks up from cwd looking for ``defined.yaml``, similar
-to how npm finds ``package.json``.
+The manifest path must be provided explicitly — there is no
+auto-discovery or directory walk-up.
 
 This module has zero CLI-specific imports (no click, rich, textual)
 so it can be used from ``state/`` and ``mission/`` layers.
@@ -16,7 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 
 # ---------------------------------------------------------------------------
@@ -25,7 +25,11 @@ from pydantic import BaseModel
 
 
 class ManifestNotFoundError(FileNotFoundError):
-    """Raised when no defined.yaml is found walking up from cwd."""
+    """Raised when the specified manifest file does not exist."""
+
+
+class ManifestValidationError(ValueError):
+    """Raised when the manifest file exists but is invalid."""
 
 
 # ---------------------------------------------------------------------------
@@ -80,33 +84,11 @@ class ProjectManifest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Discovery and loading
+# Loading
 # ---------------------------------------------------------------------------
 
 
 _MANIFEST_FILENAME = "defined.yaml"
-
-
-def discover_manifest(start: Path | None = None) -> Path:
-    """Walk up from *start* looking for defined.yaml.
-
-    Args:
-        start: Directory to start searching from. Defaults to cwd.
-
-    Returns:
-        Absolute path to the manifest file.
-
-    Raises:
-        ManifestNotFoundError: If no manifest is found.
-    """
-    current = (start or Path.cwd()).resolve()
-    for directory in [current, *current.parents]:
-        candidate = directory / _MANIFEST_FILENAME
-        if candidate.is_file():
-            return candidate
-    raise ManifestNotFoundError(
-        f"No {_MANIFEST_FILENAME} found searching upward from {current}"
-    )
 
 
 def load_manifest(path: Path) -> ProjectManifest:
@@ -120,9 +102,33 @@ def load_manifest(path: Path) -> ProjectManifest:
 
     Returns:
         Validated ProjectManifest with absolute paths.
+
+    Raises:
+        ManifestNotFoundError: If the file does not exist.
+        ManifestValidationError: If the file is malformed or fails validation.
     """
-    raw = yaml.safe_load(path.read_text())
-    manifest = ProjectManifest.model_validate(raw)
+    if not path.is_file():
+        raise ManifestNotFoundError(f"Manifest not found: {path}")
+
+    try:
+        raw = yaml.safe_load(path.read_text())
+    except yaml.YAMLError as exc:
+        raise ManifestValidationError(
+            f"Manifest is not valid YAML: {path}\n{exc}"
+        ) from exc
+
+    if raw is None or not isinstance(raw, dict):
+        raise ManifestValidationError(
+            f"Manifest is empty or not a YAML mapping: {path}"
+        )
+
+    try:
+        manifest = ProjectManifest.model_validate(raw)
+    except ValidationError as exc:
+        raise ManifestValidationError(
+            f"Manifest validation failed: {path}\n{exc}"
+        ) from exc
+
     manifest_dir = path.parent.resolve()
 
     # Resolve relative paths against the manifest directory

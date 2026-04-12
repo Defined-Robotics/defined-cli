@@ -1,10 +1,10 @@
-"""Tests for defined.yaml project manifest discovery and loading.
+"""Tests for defined.yaml project manifest loading and validation.
 
 Covers:
-- Auto-discovery (walk up from cwd)
-- Schema validation (full and minimal manifests)
+- Loading valid manifests (minimal and full)
 - Path resolution relative to manifest directory
-- Optional sim section
+- Optional sections (sim, world, verbs)
+- Error handling: missing file, invalid YAML, incomplete, logically invalid
 """
 
 from pathlib import Path
@@ -13,53 +13,22 @@ import pytest
 
 from defined_cli.manifest import (
     ManifestNotFoundError,
+    ManifestValidationError,
     ProjectManifest,
-    discover_manifest,
     load_manifest,
 )
 
 
 # ---------------------------------------------------------------------------
-# Manifest discovery
-# ---------------------------------------------------------------------------
-
-
-def test_discover_walks_up_to_find_manifest(tmp_path: Path) -> None:
-    """discover_manifest walks up from a subdirectory to find defined.yaml."""
-    manifest_file = tmp_path / "defined.yaml"
-    manifest_file.write_text("project:\n  name: test\nrobot:\n  rdf: robot.rdf.yaml\n")
-    nested = tmp_path / "tasks" / "subtasks"
-    nested.mkdir(parents=True)
-
-    result = discover_manifest(start=nested)
-    assert result == manifest_file
-
-
-def test_discover_finds_in_current_dir(tmp_path: Path) -> None:
-    """discover_manifest finds defined.yaml in the start directory itself."""
-    manifest_file = tmp_path / "defined.yaml"
-    manifest_file.write_text("project:\n  name: test\nrobot:\n  rdf: robot.rdf.yaml\n")
-
-    result = discover_manifest(start=tmp_path)
-    assert result == manifest_file
-
-
-def test_discover_raises_when_no_manifest(tmp_path: Path) -> None:
-    """discover_manifest raises ManifestNotFoundError when nothing found."""
-    nested = tmp_path / "deep" / "nested"
-    nested.mkdir(parents=True)
-
-    with pytest.raises(ManifestNotFoundError):
-        discover_manifest(start=nested)
-
-
-# ---------------------------------------------------------------------------
-# Manifest loading — minimal
+# Loading — valid manifests
 # ---------------------------------------------------------------------------
 
 
 def test_load_minimal_manifest(tmp_path: Path) -> None:
-    """A manifest with only project + robot sections is valid."""
+    """Preconditions: defined.yaml exists with only project + robot sections.
+    Tests: Minimal manifest (required fields only) loads successfully.
+    Success: project.name and robot.rdf populated; optional sections are None.
+    """
     manifest_file = tmp_path / "defined.yaml"
     manifest_file.write_text(
         "project:\n"
@@ -76,13 +45,11 @@ def test_load_minimal_manifest(tmp_path: Path) -> None:
     assert manifest.verbs is None
 
 
-# ---------------------------------------------------------------------------
-# Manifest loading — full
-# ---------------------------------------------------------------------------
-
-
 def test_load_full_manifest(tmp_path: Path) -> None:
-    """A manifest with all sections parses correctly."""
+    """Preconditions: defined.yaml exists with all sections populated.
+    Tests: Full manifest (all optional + required sections) parses correctly.
+    Success: Every field populated with expected values; paths resolved.
+    """
     manifest_file = tmp_path / "defined.yaml"
     manifest_file.write_text(
         "project:\n"
@@ -113,7 +80,10 @@ def test_load_full_manifest(tmp_path: Path) -> None:
 
 
 def test_paths_resolved_relative_to_manifest_dir(tmp_path: Path) -> None:
-    """Relative paths in the manifest are resolved against the manifest's directory."""
+    """Preconditions: Manifest in subdirectory with relative path using '..'.
+    Tests: Relative paths resolve against the manifest file's parent directory.
+    Success: robot.rdf is an absolute path pointing to the resolved location.
+    """
     subdir = tmp_path / "project"
     subdir.mkdir()
     manifest_file = subdir / "defined.yaml"
@@ -134,7 +104,10 @@ def test_paths_resolved_relative_to_manifest_dir(tmp_path: Path) -> None:
 
 
 def test_sim_section_optional(tmp_path: Path) -> None:
-    """Hardware users omit the sim section."""
+    """Preconditions: Manifest without sim section (hardware user).
+    Tests: sim section defaults to None when omitted.
+    Success: manifest.sim is None.
+    """
     manifest_file = tmp_path / "defined.yaml"
     manifest_file.write_text(
         "project:\n"
@@ -147,7 +120,10 @@ def test_sim_section_optional(tmp_path: Path) -> None:
 
 
 def test_world_section_optional(tmp_path: Path) -> None:
-    """World section is optional (user may manage POIs via CLI)."""
+    """Preconditions: Manifest without world section.
+    Tests: world section defaults to None when omitted.
+    Success: manifest.world is None.
+    """
     manifest_file = tmp_path / "defined.yaml"
     manifest_file.write_text(
         "project:\n"
@@ -160,7 +136,10 @@ def test_world_section_optional(tmp_path: Path) -> None:
 
 
 def test_verbs_section_optional(tmp_path: Path) -> None:
-    """Verbs section is optional (defaults to built-in verbs only)."""
+    """Preconditions: Manifest without verbs section.
+    Tests: verbs section defaults to None when omitted.
+    Success: manifest.verbs is None.
+    """
     manifest_file = tmp_path / "defined.yaml"
     manifest_file.write_text(
         "project:\n"
@@ -170,3 +149,145 @@ def test_verbs_section_optional(tmp_path: Path) -> None:
     )
     manifest = load_manifest(manifest_file)
     assert manifest.verbs is None
+
+
+# ---------------------------------------------------------------------------
+# Error handling — missing file
+# ---------------------------------------------------------------------------
+
+
+def test_load_nonexistent_file_raises(tmp_path: Path) -> None:
+    """Preconditions: Path points to a file that does not exist.
+    Tests: load_manifest raises ManifestNotFoundError for missing files.
+    Success: ManifestNotFoundError raised with path in message.
+    """
+    with pytest.raises(ManifestNotFoundError, match="Manifest not found"):
+        load_manifest(tmp_path / "does_not_exist.yaml")
+
+
+# ---------------------------------------------------------------------------
+# Error handling — invalid YAML
+# ---------------------------------------------------------------------------
+
+
+def test_load_invalid_yaml_raises(tmp_path: Path) -> None:
+    """Preconditions: File exists but contains malformed YAML (bad indentation).
+    Tests: load_manifest raises ManifestValidationError for unparseable YAML.
+    Success: ManifestValidationError raised with 'not valid YAML' in message.
+    """
+    manifest_file = tmp_path / "defined.yaml"
+    manifest_file.write_text("project:\n  name: test\n bad_indent: oops\n")
+    with pytest.raises(ManifestValidationError, match="not valid YAML"):
+        load_manifest(manifest_file)
+
+
+def test_load_empty_file_raises(tmp_path: Path) -> None:
+    """Preconditions: File exists but is empty.
+    Tests: load_manifest raises ManifestValidationError for empty files.
+    Success: ManifestValidationError raised with 'empty' in message.
+    """
+    manifest_file = tmp_path / "defined.yaml"
+    manifest_file.write_text("")
+    with pytest.raises(ManifestValidationError, match="empty"):
+        load_manifest(manifest_file)
+
+
+def test_load_yaml_list_raises(tmp_path: Path) -> None:
+    """Preconditions: File contains valid YAML but is a list, not a mapping.
+    Tests: load_manifest rejects non-mapping YAML documents.
+    Success: ManifestValidationError raised with 'not a YAML mapping' in message.
+    """
+    manifest_file = tmp_path / "defined.yaml"
+    manifest_file.write_text("- item1\n- item2\n")
+    with pytest.raises(ManifestValidationError, match="not a YAML mapping"):
+        load_manifest(manifest_file)
+
+
+# ---------------------------------------------------------------------------
+# Error handling — incomplete manifests
+# ---------------------------------------------------------------------------
+
+
+def test_load_missing_project_section_raises(tmp_path: Path) -> None:
+    """Preconditions: Manifest has robot section but no project section.
+    Tests: load_manifest rejects manifest missing required 'project' field.
+    Success: ManifestValidationError raised.
+    """
+    manifest_file = tmp_path / "defined.yaml"
+    manifest_file.write_text("robot:\n  rdf: robot.rdf.yaml\n")
+    with pytest.raises(ManifestValidationError, match="validation failed"):
+        load_manifest(manifest_file)
+
+
+def test_load_missing_robot_section_raises(tmp_path: Path) -> None:
+    """Preconditions: Manifest has project section but no robot section.
+    Tests: load_manifest rejects manifest missing required 'robot' field.
+    Success: ManifestValidationError raised.
+    """
+    manifest_file = tmp_path / "defined.yaml"
+    manifest_file.write_text("project:\n  name: test\n")
+    with pytest.raises(ManifestValidationError, match="validation failed"):
+        load_manifest(manifest_file)
+
+
+def test_load_missing_project_name_raises(tmp_path: Path) -> None:
+    """Preconditions: Manifest has project section but name field is missing.
+    Tests: load_manifest rejects manifest where required sub-field is absent.
+    Success: ManifestValidationError raised.
+    """
+    manifest_file = tmp_path / "defined.yaml"
+    manifest_file.write_text("project:\n  cli_version: '1.0'\nrobot:\n  rdf: r.yaml\n")
+    with pytest.raises(ManifestValidationError, match="validation failed"):
+        load_manifest(manifest_file)
+
+
+def test_load_missing_robot_rdf_raises(tmp_path: Path) -> None:
+    """Preconditions: Manifest has robot section but rdf field is missing.
+    Tests: load_manifest rejects manifest where required sub-field is absent.
+    Success: ManifestValidationError raised.
+    """
+    manifest_file = tmp_path / "defined.yaml"
+    manifest_file.write_text("project:\n  name: test\nrobot:\n  something: else\n")
+    with pytest.raises(ManifestValidationError, match="validation failed"):
+        load_manifest(manifest_file)
+
+
+# ---------------------------------------------------------------------------
+# Error handling — logical errors
+# ---------------------------------------------------------------------------
+
+
+def test_load_sim_missing_image_raises(tmp_path: Path) -> None:
+    """Preconditions: Manifest has sim section but image field is missing.
+    Tests: load_manifest rejects sim section without required 'image' field.
+    Success: ManifestValidationError raised.
+    """
+    manifest_file = tmp_path / "defined.yaml"
+    manifest_file.write_text(
+        "project:\n"
+        "  name: test\n"
+        "robot:\n"
+        "  rdf: robot.rdf.yaml\n"
+        "sim:\n"
+        "  something: else\n"
+    )
+    with pytest.raises(ManifestValidationError, match="validation failed"):
+        load_manifest(manifest_file)
+
+
+def test_load_world_missing_file_raises(tmp_path: Path) -> None:
+    """Preconditions: Manifest has world section but file field is missing.
+    Tests: load_manifest rejects world section without required 'file' field.
+    Success: ManifestValidationError raised.
+    """
+    manifest_file = tmp_path / "defined.yaml"
+    manifest_file.write_text(
+        "project:\n"
+        "  name: test\n"
+        "robot:\n"
+        "  rdf: robot.rdf.yaml\n"
+        "world:\n"
+        "  environment: maze\n"
+    )
+    with pytest.raises(ManifestValidationError, match="validation failed"):
+        load_manifest(manifest_file)

@@ -24,7 +24,10 @@ from defined_cli.state.world_loader import (
 
 
 def test_load_world_with_pois(tmp_path: Path) -> None:
-    """Load a world.yaml with POIs."""
+    """Preconditions: world.yaml has two POIs with different types.
+    Tests: load_world parses POI name, coords, type, and description.
+    Success: Two POIs returned with correct field values.
+    """
     world_file = tmp_path / "world.yaml"
     world_file.write_text(
         "name: test-world\n"
@@ -49,7 +52,10 @@ def test_load_world_with_pois(tmp_path: Path) -> None:
 
 
 def test_load_world_with_sim_section(tmp_path: Path) -> None:
-    """Load a world.yaml with simulation configuration."""
+    """Preconditions: world.yaml has sim section with environment and spawn.
+    Tests: load_world parses simulation configuration correctly.
+    Success: sim.environment and sim.spawn fields populated.
+    """
     world_file = tmp_path / "world.yaml"
     world_file.write_text(
         "name: maze\n"
@@ -69,7 +75,10 @@ def test_load_world_with_sim_section(tmp_path: Path) -> None:
 
 
 def test_load_world_with_zones(tmp_path: Path) -> None:
-    """Load a world.yaml with zones (parsed but not enforced in v0.1.0)."""
+    """Preconditions: world.yaml has zones section (parsed but not enforced).
+    Tests: load_world parses zone boundaries.
+    Success: Zone dict populated with correct structure.
+    """
     world_file = tmp_path / "world.yaml"
     world_file.write_text(
         "name: warehouse\n"
@@ -88,7 +97,10 @@ def test_load_world_with_zones(tmp_path: Path) -> None:
 
 
 def test_load_world_minimal(tmp_path: Path) -> None:
-    """A world with only a name is valid."""
+    """Preconditions: world.yaml has only a name field (all optional omitted).
+    Tests: Minimal world definition is valid.
+    Success: Empty POIs, empty zones, sim is None.
+    """
     world_file = tmp_path / "world.yaml"
     world_file.write_text("name: empty\n")
     world = load_world(world_file)
@@ -100,7 +112,10 @@ def test_load_world_minimal(tmp_path: Path) -> None:
 
 
 def test_poi_type_defaults_to_static(tmp_path: Path) -> None:
-    """POI type defaults to 'static' when not specified."""
+    """Preconditions: POI defined without explicit type field.
+    Tests: POI type defaults to 'static' when omitted.
+    Success: type field equals 'static'.
+    """
     world_file = tmp_path / "world.yaml"
     world_file.write_text(
         "name: test\n"
@@ -119,7 +134,10 @@ def test_poi_type_defaults_to_static(tmp_path: Path) -> None:
 
 
 def test_seed_blackboard_from_world() -> None:
-    """POIs from world definition end up in blackboard with correct format."""
+    """Preconditions: World has 2 POIs; blackboard is empty.
+    Tests: seed_blackboard writes POIs with correct internal format.
+    Success: Both POIs accessible via get_poi with center/type fields.
+    """
     world = WorldDefinition.model_validate({
         "name": "test",
         "pois": {
@@ -144,7 +162,10 @@ def test_seed_blackboard_from_world() -> None:
 
 
 def test_seed_blackboard_preserves_existing_pois() -> None:
-    """World POIs merge with, not replace, existing blackboard POIs."""
+    """Preconditions: Blackboard already has a 'existing' POI; world adds 'dock'.
+    Tests: seed_blackboard merges (not replaces) existing POIs.
+    Success: Both 'existing' and 'dock' POIs present after seeding.
+    """
     bb = Blackboard()
     bb.set_poi("existing", (5.0, 5.0), poi_type="dynamic")
 
@@ -163,7 +184,10 @@ def test_seed_blackboard_preserves_existing_pois() -> None:
 
 
 def test_seed_blackboard_empty_world() -> None:
-    """Seeding with a world that has no POIs is a no-op."""
+    """Preconditions: Blackboard has one POI; world has no POIs.
+    Tests: Seeding with empty world is a no-op.
+    Success: Existing POI preserved, no new POIs added.
+    """
     bb = Blackboard()
     bb.set_poi("existing", (1.0, 1.0))
 
