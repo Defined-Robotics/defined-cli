@@ -73,10 +73,30 @@ def _launch_tui(
     rdf: Path | None = None,
 ) -> None:
     """Create a DefinedSession and launch the Textual TUI."""
+    from .manifest import ManifestNotFoundError, discover_manifest, load_manifest
     from .mission.session import DefinedSession
+    from .state.blackboard import Blackboard
+    from .state.world_loader import load_world, seed_blackboard
     from .target.sim import SimTarget
     from .transport.rosbridge import RosbridgeTransport
     from .tui.defined_app import DefinedApp
+
+    # --- Manifest discovery (fail-soft) ---
+    manifest = None
+    verbs_dir = None
+    try:
+        manifest_path = discover_manifest()
+        manifest = load_manifest(manifest_path)
+        _console.print(f"[dim]Using project: {manifest.project.name} ({manifest_path})[/]")
+    except ManifestNotFoundError:
+        pass  # No manifest — fall back to CLI flags
+
+    # Manifest values provide defaults; CLI flags override when explicitly set
+    if manifest:
+        if rdf is None:
+            rdf = manifest.robot.rdf
+        if manifest.verbs is not None:
+            verbs_dir = manifest.verbs.path
 
     if target == "hw":
         raise click.UsageError(
@@ -85,6 +105,19 @@ def _launch_tui(
     target_obj = SimTarget()
     transport_obj = RosbridgeTransport(host=host, port=port)
     store = StateStore()
+
+    # --- World loading (if manifest references a world file) ---
+    if manifest and manifest.world is not None and manifest.world.file.exists():
+        try:
+            world = load_world(manifest.world.file)
+            snapshot = store.load()
+            bb = Blackboard(data={"world": {"pois": snapshot.world.pois}})
+            seed_blackboard(world, bb)
+            snapshot.world.pois = bb.list_pois()
+            store.save(snapshot)
+            _console.print(f"[dim]Loaded world: {world.name} ({len(world.pois)} POIs)[/]")
+        except Exception as exc:
+            _console.print(f"[yellow]Warning: Could not load world file: {exc}[/]")
 
     session = DefinedSession(
         target=target_obj,

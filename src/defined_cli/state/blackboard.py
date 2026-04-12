@@ -146,6 +146,16 @@ class Blackboard:
         """Return all POIs as ``{name: poi_dict}``."""
         return self.list(_POI_PREFIX)
 
+    def clear(self) -> None:
+        """Remove all data from the blackboard, starting fresh."""
+        self._data.clear()
+
+    def clear_pois(self) -> None:
+        """Remove all POIs, preserving other blackboard data."""
+        pois = self.get(_POI_PREFIX)
+        if isinstance(pois, dict):
+            pois.clear()
+
     # -------------------------------------------------------------------
     # Serialization
     # -------------------------------------------------------------------

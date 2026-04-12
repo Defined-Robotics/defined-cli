@@ -170,3 +170,47 @@ class TestSerialization:
         data = bb.to_dict()
         data["world"]["pois"]["dock"]["center"]["x"] = 999.0
         assert bb.get_poi("dock")["center"]["x"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Clear methods
+# ---------------------------------------------------------------------------
+
+
+class TestClear:
+
+    def test_clear_removes_all_data(self):
+        """Preconditions: Blackboard has POIs and other data.
+        Tests: clear() removes everything.
+        Success: to_dict() returns empty dict, no POIs remain.
+        """
+        bb = Blackboard()
+        bb.set_poi("dock", (0.0, 0.0))
+        bb.set("robot.name", "turtlebot")
+        bb.clear()
+
+        assert bb.to_dict() == {}
+        assert bb.list_pois() == {}
+        assert bb.get("robot.name") is None
+
+    def test_clear_pois_removes_only_pois(self):
+        """Preconditions: Blackboard has POIs and other data under world.
+        Tests: clear_pois() removes POIs but preserves other data.
+        Success: list_pois() empty, other data intact.
+        """
+        bb = Blackboard()
+        bb.set_poi("dock", (0.0, 0.0))
+        bb.set("robot.name", "turtlebot")
+        bb.clear_pois()
+
+        assert bb.list_pois() == {}
+        assert bb.get("robot.name") == "turtlebot"
+
+    def test_clear_pois_noop_when_empty(self):
+        """Preconditions: Blackboard has no POIs.
+        Tests: clear_pois() is safe to call on empty blackboard.
+        Success: No exception raised.
+        """
+        bb = Blackboard()
+        bb.clear_pois()
+        assert bb.list_pois() == {}
