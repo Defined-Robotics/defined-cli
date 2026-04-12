@@ -33,4 +33,18 @@ Release PRs (`release/vX.Y.Z`) promote `[Unreleased]` → the versioned heading.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Added
+- `manifest.py` — `defined.yaml` project manifest schema and loading with explicit path (no walk-up discovery)
+- `ManifestNotFoundError` and `ManifestValidationError` for structured error handling on malformed manifests
+- `state/world_loader.py` — `world.yaml` loader with POI/zone/sim models and blackboard seeding
+- `launcher.py` — session startup logic extracted from `main.py` (manifest loading, world loading, target selection, session creation)
+- `target/docker_image.py` — `DockerImageTarget` for pre-built Docker images via docker-py SDK with host bind mount for BT XML
+- `--manifest` CLI flag for explicit `defined.yaml` path
+- `Blackboard.clear()` and `Blackboard.clear_pois()` methods
+- `docker>=7.0` dependency for Docker SDK integration
+- `verbs_dir` threaded from manifest through `DefinedApp` into `DefinedSession.run_mission`
+
+### Changed
+- `main.py` modularized — startup logic moved to `launcher.py`, CLI definitions remain
+- Target selection logic moved from `main.py._select_target()` to `launcher.select_target()`
+- World loading is a soft error — sim can start without a world file, warning shown to user

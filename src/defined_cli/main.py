@@ -7,22 +7,28 @@ Entry points:
 - ``defined world``     — POI management (add, list, mark, watch)
 
 Usage:
-    defined --rdf robot.rdf.yaml
+    defined --manifest defined.yaml --rdf robot.rdf.yaml
     defined compile tasks/patrol.task.yaml --rdf robot.rdf.yaml
     defined world add dock 0.0 0.0
 """
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import click
 from rich.console import Console
+from rich.table import Table
 
 from . import __version__
 from .compiler import compile_task
 from .errors import DefinedError
+from .launcher import create_session, try_load_manifest, try_load_world
+from .state.blackboard import Blackboard
 from .state.store import StateStore
+from .transport.pose import fetch_robot_pose, subscribe_clicked_point
+from .tui.defined_app import DefinedApp
 
 _console = Console(stderr=True)
 
@@ -48,8 +54,17 @@ def _show_error(error: DefinedError, *, verbose: bool = False) -> None:
 @click.option("--host", default="localhost", help="Rosbridge host.")
 @click.option("--port", default=9090, type=int, help="Rosbridge port.")
 @click.option("--rdf", type=click.Path(exists=True, path_type=Path), default=None, help="Robot RDF YAML.")
+@click.option("--manifest", type=click.Path(exists=True, path_type=Path), default=None, help="Path to defined.yaml.")
 @click.pass_context
-def cli(ctx: click.Context, verbose: bool, target: str, host: str, port: int, rdf: Path | None) -> None:
+def cli(
+    ctx: click.Context,
+    verbose: bool,
+    target: str,
+    host: str,
+    port: int,
+    rdf: Path | None,
+    manifest: Path | None,
+) -> None:
     """Defined Robotics platform — unified mission control.
 
     Run with no subcommand to launch the interactive TUI.
@@ -60,9 +75,10 @@ def cli(ctx: click.Context, verbose: bool, target: str, host: str, port: int, rd
     ctx.obj["host"] = host
     ctx.obj["port"] = port
     ctx.obj["rdf"] = rdf
+    ctx.obj["manifest"] = manifest
 
     if ctx.invoked_subcommand is None:
-        _launch_tui(target=target, host=host, port=port, rdf=rdf)
+        _launch_tui(target=target, host=host, port=port, rdf=rdf, manifest_path=manifest)
 
 
 def _launch_tui(
@@ -71,27 +87,16 @@ def _launch_tui(
     host: str = "localhost",
     port: int = 9090,
     rdf: Path | None = None,
+    manifest_path: Path | None = None,
 ) -> None:
     """Create a DefinedSession and launch the Textual TUI."""
-    from .manifest import ManifestNotFoundError, discover_manifest, load_manifest
-    from .mission.session import DefinedSession
-    from .state.blackboard import Blackboard
-    from .state.world_loader import load_world, seed_blackboard
-    from .target.sim import SimTarget
-    from .transport.rosbridge import RosbridgeTransport
-    from .tui.defined_app import DefinedApp
-
-    # --- Manifest discovery (fail-soft) ---
-    manifest = None
-    verbs_dir = None
-    try:
-        manifest_path = discover_manifest()
-        manifest = load_manifest(manifest_path)
-        _console.print(f"[dim]Using project: {manifest.project.name} ({manifest_path})[/]")
-    except ManifestNotFoundError:
-        pass  # No manifest — fall back to CLI flags
+    # --- Manifest loading (fail-soft) ---
+    manifest = try_load_manifest(manifest_path)
+    if manifest is not None:
+        _console.print(f"[dim]Using project: {manifest.project.name}[/]")
 
     # Manifest values provide defaults; CLI flags override when explicitly set
+    verbs_dir: Path | None = None
     if manifest:
         if rdf is None:
             rdf = manifest.robot.rdf
@@ -102,34 +107,24 @@ def _launch_tui(
         raise click.UsageError(
             "Hardware target is not yet implemented. Use --target sim."
         )
-    target_obj = SimTarget()
-    transport_obj = RosbridgeTransport(host=host, port=port)
-    store = StateStore()
 
-    # --- World loading (if manifest references a world file) ---
-    if manifest and manifest.world is not None and manifest.world.file.exists():
-        try:
-            world = load_world(manifest.world.file)
-            snapshot = store.load()
-            bb = Blackboard(data={"world": {"pois": snapshot.world.pois}})
-            seed_blackboard(world, bb)
-            snapshot.world.pois = bb.list_pois()
-            store.save(snapshot)
-            _console.print(f"[dim]Loaded world: {world.name} ({len(world.pois)} POIs)[/]")
-        except Exception as exc:
-            _console.print(f"[yellow]Warning: Could not load world file: {exc}[/]")
+    # --- World loading (soft error — sim can start without it) ---
+    world = try_load_world(manifest)
+    if world is not None:
+        _console.print(f"[dim]Loaded world: {world.name} ({len(world.pois)} POIs)[/]")
+    elif manifest is not None and manifest.world is not None:
+        _console.print("[yellow]Warning: Could not load world file — continuing without POIs.[/]")
 
-    session = DefinedSession(
-        target=target_obj,
-        transport=transport_obj,
-        store=store,
-        compile_fn=compile_task,
+    # --- Session creation ---
+    session = create_session(
+        manifest=manifest,
+        world=world,
+        host=host,
+        port=port,
     )
 
-    # Don't block on connect — TUI will appear immediately and
-    # show "Disconnected" until the background connect succeeds.
     try:
-        app = DefinedApp(session, rdf=rdf)
+        app = DefinedApp(session, rdf=rdf, verbs_dir=verbs_dir)
         app.run()
     except KeyboardInterrupt:
         pass
@@ -184,8 +179,6 @@ def world() -> None:
 @click.option("--radius", default=0.5, type=float, show_default=True)
 def world_add(name: str, x: float, y: float, poi_type: str, radius: float) -> None:
     """Add or update a Point of Interest."""
-    from .state.blackboard import Blackboard
-
     store = StateStore()
     snapshot = store.load()
     bb = Blackboard(data={"world": {"pois": snapshot.world.pois}})
@@ -198,8 +191,6 @@ def world_add(name: str, x: float, y: float, poi_type: str, radius: float) -> No
 @world.command("list")
 def world_list() -> None:
     """List all defined Points of Interest."""
-    from rich.table import Table
-
     store = StateStore()
     snapshot = store.load()
     pois = snapshot.world.pois
@@ -235,9 +226,6 @@ def world_list() -> None:
 @click.option("--port", default=9090, type=int)
 def world_mark(name: str, poi_type: str, radius: float, host: str, port: int) -> None:
     """Mark the robot's current position as a named POI."""
-    from .state.blackboard import Blackboard
-    from .transport.pose import fetch_robot_pose
-
     try:
         x, y = fetch_robot_pose(host=host, port=port)
     except (TimeoutError, ConnectionError) as exc:
@@ -260,9 +248,6 @@ def world_mark(name: str, poi_type: str, radius: float, host: str, port: int) ->
 @click.option("--port", default=9090, type=int)
 def world_watch(poi_type: str, radius: float, host: str, port: int) -> None:
     """Watch for map clicks and save as POIs."""
-    from .state.blackboard import Blackboard
-    from .transport.pose import subscribe_clicked_point
-
     store = StateStore()
     count = 0
 
@@ -282,7 +267,6 @@ def world_watch(poi_type: str, radius: float, host: str, port: int) -> None:
         _console.print("[dim]Watching for clicks on /clicked_point… (Ctrl+C to stop)[/]")
         ros, topic = subscribe_clicked_point(host=host, port=port, callback=_on_click)
 
-        import threading
         stop = threading.Event()
         try:
             stop.wait()

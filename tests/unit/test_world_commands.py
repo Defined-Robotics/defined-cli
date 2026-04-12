@@ -95,7 +95,7 @@ class TestFetchRobotPose:
 class TestWorldMark:
 
     @patch("defined_cli.main.StateStore")
-    @patch("defined_cli.transport.pose.fetch_robot_pose", return_value=(1.5, 2.0))
+    @patch("defined_cli.main.fetch_robot_pose", return_value=(1.5, 2.0))
     def test_mark_saves_poi(self, mock_fetch, mock_store_cls, tmp_path):
         """world mark captures pose and saves as POI."""
         store = StateStore(path=tmp_path / "state.yaml")
@@ -114,7 +114,7 @@ class TestWorldMark:
         assert poi["center"]["y"] == pytest.approx(2.0)
 
     @patch("defined_cli.main.StateStore")
-    @patch("defined_cli.transport.pose.fetch_robot_pose", side_effect=TimeoutError("no pose"))
+    @patch("defined_cli.main.fetch_robot_pose", side_effect=TimeoutError("no pose"))
     def test_mark_shows_error_on_timeout(self, mock_fetch, mock_store_cls, tmp_path):
         """world mark shows error when pose fetch times out."""
         store = StateStore(path=tmp_path / "state.yaml")

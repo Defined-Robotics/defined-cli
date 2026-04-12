@@ -124,10 +124,11 @@ class DefinedApp(App):
         Binding("ctrl+e", "emergency_stop", "E-STOP", show=True, priority=True),
     ]
 
-    def __init__(self, session: DefinedSession, rdf: Path | None = None, **kwargs) -> None:
+    def __init__(self, session: DefinedSession, rdf: Path | None = None, verbs_dir: Path | None = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self._session = session
         self._rdf = rdf
+        self._verbs_dir = verbs_dir
         self._start_time = time.monotonic()
         self._task_dir = Path.cwd()
         self._teleop_mode = False
@@ -458,7 +459,7 @@ class DefinedApp(App):
             self._log_activity(f"Multiple matches: {names}. Using {task_path.name}")
 
         try:
-            self._session.run_mission(task_path, self._rdf, param_overrides=param_overrides or None)
+            self._session.run_mission(task_path, self._rdf, verbs_dir=self._verbs_dir, param_overrides=param_overrides or None)
             suffix = f" ({', '.join(f'{k}={v}' for k, v in param_overrides.items())})" if param_overrides else ""
             self._log_activity(f"Running {task_path.name}{suffix}...")
         except RuntimeError as exc:
