@@ -92,7 +92,7 @@ class TestDockerImageTargetStart:
         assert call_kwargs[0][0] == "ghcr.io/defined-robotics/sim:0.1.0"
         assert call_kwargs[1]["name"] == "defined_sim"
         assert call_kwargs[1]["detach"] is True
-        assert call_kwargs[1]["ports"] == {"9090/tcp": 9090}
+        assert call_kwargs[1]["ports"] == {"9090/tcp": 9090, "8765/tcp": 8765}
 
     def test_start_passes_world_env(self, mock_client: MagicMock) -> None:
         """Preconditions: world_env is set to 'warehouse'.

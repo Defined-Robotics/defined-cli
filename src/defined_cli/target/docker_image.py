@@ -25,6 +25,13 @@ _log = logging.getLogger(__name__)
 _CONTAINER_NAME = "defined_sim"
 _CONTAINER_BT_XML_PATH = "/bt_xml"
 
+# Default command to launch the full simulation stack inside the container.
+# The image's own CMD is just "bash" (interactive use), so we must override.
+_DEFAULT_COMMAND = (
+    "ros2 launch defined_bringup simulation.launch.py"
+    " use_gui:=false use_slam:=true run_bt:=true run_explore:=true"
+)
+
 
 class DockerImageTarget(TargetBase):
     """Backend target that runs a pre-built Docker image.
@@ -70,9 +77,13 @@ class DockerImageTarget(TargetBase):
         try:
             self._client.containers.run(
                 self._image,
+                command=_DEFAULT_COMMAND,
                 name=_CONTAINER_NAME,
                 detach=True,
-                ports={"9090/tcp": self._port},
+                ports={
+                    "9090/tcp": self._port,
+                    "8765/tcp": 8765,
+                },
                 volumes=volumes or None,
                 environment=environment or None,
             )
