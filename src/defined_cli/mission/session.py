@@ -92,11 +92,13 @@ class DefinedSession:
         transport: TransportBase,
         store: StateStore,
         compile_fn: Callable[..., CompileResult],
+        output_dir: Path | None = None,
     ) -> None:
         self._target = target
         self._transport = transport
         self._store = store
         self._compile_fn = compile_fn
+        self._output_dir = output_dir
 
         self._lock = threading.Lock()
         self._done_event = threading.Event()
@@ -274,7 +276,7 @@ class DefinedSession:
         verbs_dir: Path | None = None,
     ) -> CompileResult:
         """Compile a task YAML to BT XML. Works without connection."""
-        return self._compile_fn(task, rdf, verbs_dir, None)
+        return self._compile_fn(task, rdf, verbs_dir, self._output_dir)
 
     # ------------------------------------------------------------------
     # Mission execution
@@ -381,14 +383,14 @@ class DefinedSession:
                 resolved_path = Path(tmp.name)
             try:
                 return self._compile_fn(
-                    resolved_path, rdf_yaml, verbs_dir, None,
+                    resolved_path, rdf_yaml, verbs_dir, self._output_dir,
                     param_overrides=param_overrides,
                 )
             finally:
                 resolved_path.unlink(missing_ok=True)
 
         return self._compile_fn(
-            task_yaml, rdf_yaml, verbs_dir, None,
+            task_yaml, rdf_yaml, verbs_dir, self._output_dir,
             param_overrides=param_overrides,
         )
 

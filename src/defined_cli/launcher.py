@@ -167,4 +167,5 @@ def create_session(
         transport=transport,
         store=store,
         compile_fn=compile_task,
+        output_dir=bt_xml_dir,
     )

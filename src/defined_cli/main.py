@@ -14,6 +14,7 @@ Usage:
 
 from __future__ import annotations
 
+import tempfile
 import threading
 from pathlib import Path
 
@@ -116,9 +117,11 @@ def _launch_tui(
         _console.print("[yellow]Warning: Could not load world file — continuing without POIs.[/]")
 
     # --- Session creation ---
-    # Default BT XML output dir — must match the compiler's default so the
-    # DockerImageTarget bind-mounts the right host directory into /bt_xml.
-    bt_xml_dir = Path(__file__).resolve().parent.parent.parent / "verb-compiler" / "build"
+    # Use a temp directory for compiled BT XML. This dir is bind-mounted
+    # into the Docker container at /bt_xml and cleaned up on exit.
+    # No workspace path assumptions — works for installed CLI too.
+    bt_xml_tmpdir = tempfile.mkdtemp(prefix="defined_bt_xml_")
+    bt_xml_dir = Path(bt_xml_tmpdir)
 
     session = create_session(
         manifest=manifest,
