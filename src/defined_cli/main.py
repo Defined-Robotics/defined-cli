@@ -116,11 +116,16 @@ def _launch_tui(
         _console.print("[yellow]Warning: Could not load world file — continuing without POIs.[/]")
 
     # --- Session creation ---
+    # Default BT XML output dir — must match the compiler's default so the
+    # DockerImageTarget bind-mounts the right host directory into /bt_xml.
+    bt_xml_dir = Path(__file__).resolve().parent.parent.parent / "verb-compiler" / "build"
+
     session = create_session(
         manifest=manifest,
         world=world,
         host=host,
         port=port,
+        bt_xml_dir=bt_xml_dir,
     )
 
     try:
