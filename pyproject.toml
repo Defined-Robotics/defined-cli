@@ -16,19 +16,15 @@ dependencies = [
     "click>=8.0",
     "rich>=13.0",
     "docker>=7.0",
+    "textual>=0.50",
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
 ]
 
-# Optional dependency groups:
-#   tui  — end-users: enables --tui flag (Textual full-screen display)
-#   dev  — contributors: testing tools + all optional runtime features
 [project.optional-dependencies]
-tui = [
-    "textual>=0.50",
-]
 dev = [
     "pytest>=8.0",
     "pytest-mock",
-    "textual>=0.50",
 ]
 
 [project.scripts]
