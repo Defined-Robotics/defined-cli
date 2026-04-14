@@ -91,10 +91,15 @@ def _launch_tui(
     manifest_path: Path | None = None,
 ) -> None:
     """Create a DefinedSession and launch the Textual TUI."""
+    _console.print(f"[bold]defined[/] v{__version__}")
+
     # --- Manifest loading (fail-soft) ---
+    _console.print("[dim]Loading manifest...[/]", end=" ")
     manifest = try_load_manifest(manifest_path)
     if manifest is not None:
-        _console.print(f"[dim]Using project: {manifest.project.name}[/]")
+        _console.print(f"[green]✓[/] [dim]{manifest.project.name}[/]")
+    else:
+        _console.print("[dim]none[/]")
 
     # Manifest values provide defaults; CLI flags override when explicitly set
     verbs_dir: Path | None = None
@@ -110,11 +115,22 @@ def _launch_tui(
         )
 
     # --- World loading (soft error — sim can start without it) ---
+    _console.print("[dim]Loading world...[/]", end=" ")
     world = try_load_world(manifest)
     if world is not None:
-        _console.print(f"[dim]Loaded world: {world.name} ({len(world.pois)} POIs)[/]")
+        _console.print(f"[green]✓[/] [dim]{world.name} ({len(world.pois)} POIs)[/]")
+        if world.sim:
+            env = world.sim.environment
+            sp = world.sim.spawn
+            _console.print(f"[dim]  Sim environment: {env}  spawn: ({sp.x}, {sp.y}, yaw={sp.yaw})[/]")
     elif manifest is not None and manifest.world is not None:
-        _console.print("[yellow]Warning: Could not load world file — continuing without POIs.[/]")
+        _console.print("[yellow]⚠ not found — continuing without POIs[/]")
+    else:
+        _console.print("[dim]none[/]")
+
+    # --- RDF ---
+    if rdf is not None:
+        _console.print(f"[dim]Robot RDF: {rdf.name}[/]")
 
     # --- Session creation ---
     # Use a temp directory for compiled BT XML. This dir is bind-mounted
@@ -123,14 +139,20 @@ def _launch_tui(
     bt_xml_tmpdir = tempfile.mkdtemp(prefix="defined_bt_xml_")
     bt_xml_dir = Path(bt_xml_tmpdir)
 
+    sim_image = manifest.sim.image if manifest and manifest.sim else None
+    target_desc = f"docker image ({sim_image})" if sim_image else "docker compose"
+    _console.print(f"[dim]Creating session (target={target_desc}, {host}:{port})...[/]", end=" ")
     session = create_session(
         manifest=manifest,
         world=world,
         host=host,
         port=port,
         bt_xml_dir=bt_xml_dir,
+        rdf=rdf,
     )
+    _console.print("[green]✓[/]")
 
+    _console.print("[dim]Starting TUI...[/]")
     try:
         app = DefinedApp(session, rdf=rdf, verbs_dir=verbs_dir)
         app.run()

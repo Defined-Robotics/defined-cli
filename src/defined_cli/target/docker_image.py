@@ -17,6 +17,8 @@ from pathlib import Path
 import docker
 import docker.errors
 
+from defined_rdf.robot_config import RobotConfig
+
 from defined_cli.errors import BackendError
 from defined_cli.target import TargetBase, TargetStatus
 
@@ -25,12 +27,66 @@ _log = logging.getLogger(__name__)
 _CONTAINER_NAME = "defined_sim"
 _CONTAINER_BT_XML_PATH = "/bt_xml"
 
-# Default command to launch the full simulation stack inside the container.
+# Base command to launch the full simulation stack inside the container.
 # The image's own CMD is just "bash" (interactive use), so we must override.
-_DEFAULT_COMMAND = (
+# Spawn position args (x, y, yaw) are appended at runtime from world config.
+_BASE_COMMAND = (
     "ros2 launch defined_bringup simulation.launch.py"
     " use_gui:=false use_slam:=true run_bt:=true run_explore:=true"
 )
+
+# ---------------------------------------------------------------------------
+# Sensor env-var registry — extensible: add one dict entry per new sensor.
+# Keys starting with "__present__" become "true" when the capability exists.
+# Other values are looked up in the sensor's parameter dict.
+# ---------------------------------------------------------------------------
+
+_PRESENT = "__present__"
+
+_SENSOR_ENV_REGISTRY: dict[str, dict[str, str]] = {
+    "lidar_2d": {
+        "ROBOT_HAS_LIDAR": _PRESENT,
+        "ROBOT_LIDAR_RANGE_MIN": "range_min",
+        "ROBOT_LIDAR_RANGE_MAX": "range_max",
+        "ROBOT_LIDAR_SAMPLES": "samples",
+        "ROBOT_LIDAR_UPDATE_RATE": "update_rate",
+    },
+    "rgb_camera": {
+        "ROBOT_HAS_CAMERA": _PRESENT,
+        "ROBOT_CAMERA_WIDTH": "resolution_width",
+        "ROBOT_CAMERA_HEIGHT": "resolution_height",
+        "ROBOT_CAMERA_FPS": "fps",
+    },
+}
+
+
+def robot_config_to_sim_env(config: RobotConfig) -> dict[str, str]:
+    """Convert a RobotConfig to Docker environment variables.
+
+    Drive parameters are always emitted.  Sensor parameters are emitted
+    for sensor types that have entries in ``_SENSOR_ENV_REGISTRY``.
+    Unknown sensor types are silently skipped (they have no sim mapping).
+    """
+    env: dict[str, str] = {
+        "ROBOT_WHEEL_SEPARATION": str(config.drive.wheel_separation),
+        "ROBOT_WHEEL_RADIUS": str(config.drive.wheel_radius),
+        "ROBOT_MAX_LINEAR_VEL": str(config.drive.max_linear_velocity),
+        "ROBOT_MAX_ANGULAR_VEL": str(config.drive.max_angular_velocity),
+    }
+
+    for sensor_type, mapping in _SENSOR_ENV_REGISTRY.items():
+        has_key = next((k for k, v in mapping.items() if v == _PRESENT), None)
+        if config.has_sensor(sensor_type):
+            params = config.sensor_params(sensor_type)
+            for env_key, param_key in mapping.items():
+                if param_key == _PRESENT:
+                    env[env_key] = "true"
+                else:
+                    env[env_key] = str(params[param_key])
+        elif has_key:
+            env[has_key] = "false"
+
+    return env
 
 
 class DockerImageTarget(TargetBase):
@@ -41,7 +97,9 @@ class DockerImageTarget(TargetBase):
         bt_xml_dir: Host directory where compiled BT XML is written.
             Bind-mounted into the container at ``/bt_xml``.
         world_env: Gazebo world name passed as ``WORLD_NAME`` env var.
+        spawn: Robot spawn pose ``(x, y, yaw)`` passed as launch args.
         port: Rosbridge port to expose (default 9090).
+        robot_config: Optional RobotConfig to translate into ``ROBOT_*`` env vars.
     """
 
     def __init__(
@@ -50,19 +108,30 @@ class DockerImageTarget(TargetBase):
         *,
         bt_xml_dir: Path | None = None,
         world_env: str | None = None,
+        spawn: tuple[float, float, float] | None = None,
         port: int = 9090,
+        robot_config: RobotConfig | None = None,
     ) -> None:
         self._image = image
         self._bt_xml_dir = bt_xml_dir
         self._world_env = world_env
+        self._spawn = spawn
         self._port = port
+        self._robot_config = robot_config
         self._client = _get_client()
 
     def start(self) -> None:
         """Pull image if needed, remove stale container, and start."""
         self._remove_existing()
 
+        command = _BASE_COMMAND
+        if self._spawn is not None:
+            x, y, yaw = self._spawn
+            command += f" x:={x} y:={y} yaw:={yaw}"
+
         environment: dict[str, str] = {}
+        if self._robot_config is not None:
+            environment.update(robot_config_to_sim_env(self._robot_config))
         if self._world_env:
             environment["WORLD_NAME"] = self._world_env
 
@@ -77,7 +146,7 @@ class DockerImageTarget(TargetBase):
         try:
             self._client.containers.run(
                 self._image,
-                command=_DEFAULT_COMMAND,
+                command=command,
                 name=_CONTAINER_NAME,
                 detach=True,
                 ports={
