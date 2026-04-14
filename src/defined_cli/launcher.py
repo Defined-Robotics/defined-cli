@@ -15,6 +15,7 @@ from defined_rdf.parser import load as load_rdf
 from defined_rdf.robot_config import RobotConfig, extract_robot_config
 
 from defined_cli.compiler import compile_task
+from defined_cli.mission.validator import validate_deps
 from defined_cli.manifest import (
     ManifestNotFoundError,
     ManifestValidationError,
@@ -174,6 +175,12 @@ def create_session(
     Returns:
         A ready-to-connect DefinedSession.
     """
+    # Dep validation plumbing (v0.1.0: always passes)
+    verbs_dir = manifest.verbs.path if manifest and manifest.verbs else None
+    dep_warnings = validate_deps(verbs_dir=verbs_dir)
+    for warning in dep_warnings:
+        _log.warning("Dependency: %s", warning)
+
     robot_config = try_load_robot_config(rdf)
 
     world_env = world.sim.environment if world and world.sim else None
