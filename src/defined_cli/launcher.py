@@ -11,7 +11,11 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from defined_rdf.parser import load as load_rdf
+from defined_rdf.robot_config import RobotConfig, extract_robot_config
+
 from defined_cli.compiler import compile_task
+from defined_cli.mission.validator import validate_deps
 from defined_cli.manifest import (
     ManifestNotFoundError,
     ManifestValidationError,
@@ -34,8 +38,10 @@ def select_target(
     *,
     manifest: ProjectManifest | None = None,
     world_env: str | None = None,
+    spawn: tuple[float, float, float] | None = None,
     bt_xml_dir: Path | None = None,
     port: int = 9090,
+    robot_config: RobotConfig | None = None,
 ) -> TargetBase:
     """Select the appropriate target based on manifest.
 
@@ -46,8 +52,10 @@ def select_target(
     Args:
         manifest: Loaded project manifest (may be None).
         world_env: Gazebo world name for the WORLD_NAME env var.
+        spawn: Robot spawn pose ``(x, y, yaw)`` from world config.
         bt_xml_dir: Host directory for compiled BT XML (bind-mounted).
         port: Rosbridge port.
+        robot_config: RobotConfig extracted from RDF (drives sim env vars).
 
     Returns:
         A configured TargetBase instance.
@@ -57,7 +65,9 @@ def select_target(
             image=manifest.sim.image,
             bt_xml_dir=bt_xml_dir,
             world_env=world_env,
+            spawn=spawn,
             port=port,
+            robot_config=robot_config,
         )
     return SimTarget()
 
@@ -124,6 +134,25 @@ def seed_world_pois(world: WorldDefinition, store: StateStore) -> None:
     store.save(snapshot)
 
 
+def try_load_robot_config(rdf_path: Path | None) -> RobotConfig | None:
+    """Load RDF and extract RobotConfig. Returns None on failure.
+
+    Args:
+        rdf_path: Path to the ``.rdf.yaml`` file, or None to skip.
+
+    Returns:
+        Extracted RobotConfig, or None.
+    """
+    if rdf_path is None:
+        return None
+    try:
+        robot = load_rdf(rdf_path)
+        return extract_robot_config(robot)
+    except Exception as exc:
+        _log.warning("Could not extract robot config from %s: %s", rdf_path, exc)
+        return None
+
+
 def create_session(
     *,
     manifest: ProjectManifest | None = None,
@@ -131,6 +160,7 @@ def create_session(
     host: str = "localhost",
     port: int = 9090,
     bt_xml_dir: Path | None = None,
+    rdf: Path | None = None,
 ) -> DefinedSession:
     """Build a fully configured DefinedSession.
 
@@ -140,17 +170,32 @@ def create_session(
         host: Rosbridge host.
         port: Rosbridge port.
         bt_xml_dir: Host directory for compiled BT XML.
+        rdf: Path to robot RDF YAML (used to extract RobotConfig for sim env vars).
 
     Returns:
         A ready-to-connect DefinedSession.
     """
+    # Dep validation plumbing (v0.1.0: always passes)
+    verbs_dir = manifest.verbs.path if manifest and manifest.verbs else None
+    dep_warnings = validate_deps(verbs_dir=verbs_dir)
+    for warning in dep_warnings:
+        _log.warning("Dependency: %s", warning)
+
+    robot_config = try_load_robot_config(rdf)
+
     world_env = world.sim.environment if world and world.sim else None
+    spawn = None
+    if world and world.sim and world.sim.spawn:
+        s = world.sim.spawn
+        spawn = (s.x, s.y, s.yaw)
 
     target = select_target(
         manifest=manifest,
         world_env=world_env,
+        spawn=spawn,
         bt_xml_dir=bt_xml_dir,
         port=port,
+        robot_config=robot_config,
     )
     transport = RosbridgeTransport(host=host, port=port)
     store = StateStore()
@@ -167,4 +212,5 @@ def create_session(
         transport=transport,
         store=store,
         compile_fn=compile_task,
+        output_dir=bt_xml_dir,
     )

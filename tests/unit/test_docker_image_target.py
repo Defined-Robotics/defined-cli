@@ -16,9 +16,11 @@ from unittest.mock import MagicMock, patch
 import docker.errors
 import pytest
 
+from defined_rdf.robot_config import DriveConfig, RobotConfig
+
 from defined_cli.errors import BackendError
 from defined_cli.target import TargetStatus
-from defined_cli.target.docker_image import DockerImageTarget
+from defined_cli.target.docker_image import DockerImageTarget, robot_config_to_sim_env
 
 
 @pytest.fixture()
@@ -92,7 +94,7 @@ class TestDockerImageTargetStart:
         assert call_kwargs[0][0] == "ghcr.io/defined-robotics/sim:0.1.0"
         assert call_kwargs[1]["name"] == "defined_sim"
         assert call_kwargs[1]["detach"] is True
-        assert call_kwargs[1]["ports"] == {"9090/tcp": 9090}
+        assert call_kwargs[1]["ports"] == {"9090/tcp": 9090, "8765/tcp": 8765}
 
     def test_start_passes_world_env(self, mock_client: MagicMock) -> None:
         """Preconditions: world_env is set to 'warehouse'.
@@ -271,3 +273,156 @@ class TestResolveXmlPath:
         target = DockerImageTarget(image="my-image:latest")
         result = target.resolve_xml_path(Path("/tmp/output/patrol.xml"))
         assert result == "/bt_xml/patrol.xml"
+
+
+# ---------------------------------------------------------------------------
+# robot_config_to_sim_env()
+# ---------------------------------------------------------------------------
+
+def _make_drive(**overrides: float) -> DriveConfig:
+    defaults = dict(
+        wheel_separation=0.160,
+        wheel_radius=0.033,
+        max_linear_velocity=0.22,
+        max_angular_velocity=2.84,
+    )
+    defaults.update(overrides)
+    return DriveConfig(**defaults)
+
+
+class TestRobotConfigToSimEnv:
+
+    def test_drive_only(self) -> None:
+        """Minimal robot — drive params, no sensors."""
+        config = RobotConfig(name="minimal", drive=_make_drive(), sensors={})
+        env = robot_config_to_sim_env(config)
+
+        assert env["ROBOT_WHEEL_SEPARATION"] == "0.16"
+        assert env["ROBOT_WHEEL_RADIUS"] == "0.033"
+        assert env["ROBOT_MAX_LINEAR_VEL"] == "0.22"
+        assert env["ROBOT_MAX_ANGULAR_VEL"] == "2.84"
+        assert env["ROBOT_HAS_LIDAR"] == "false"
+        assert env["ROBOT_HAS_CAMERA"] == "false"
+
+    def test_with_lidar(self) -> None:
+        """Robot with lidar — lidar env vars populated."""
+        config = RobotConfig(
+            name="burger",
+            drive=_make_drive(),
+            sensors={
+                "lidar_2d": {
+                    "range_min": 0.120,
+                    "range_max": 3.500,
+                    "samples": 360,
+                    "update_rate": 5.0,
+                },
+            },
+        )
+        env = robot_config_to_sim_env(config)
+
+        assert env["ROBOT_HAS_LIDAR"] == "true"
+        assert env["ROBOT_LIDAR_RANGE_MIN"] == "0.12"
+        assert env["ROBOT_LIDAR_RANGE_MAX"] == "3.5"
+        assert env["ROBOT_LIDAR_SAMPLES"] == "360"
+        assert env["ROBOT_LIDAR_UPDATE_RATE"] == "5.0"
+        assert env["ROBOT_HAS_CAMERA"] == "false"
+
+    def test_with_camera(self) -> None:
+        """Robot with camera — camera env vars populated."""
+        config = RobotConfig(
+            name="burger_cam",
+            drive=_make_drive(),
+            sensors={
+                "rgb_camera": {
+                    "resolution_width": 640,
+                    "resolution_height": 480,
+                    "fps": 30,
+                },
+            },
+        )
+        env = robot_config_to_sim_env(config)
+
+        assert env["ROBOT_HAS_CAMERA"] == "true"
+        assert env["ROBOT_CAMERA_WIDTH"] == "640"
+        assert env["ROBOT_CAMERA_HEIGHT"] == "480"
+        assert env["ROBOT_CAMERA_FPS"] == "30"
+
+    def test_full_robot(self) -> None:
+        """Robot with both lidar + camera — all env vars present."""
+        config = RobotConfig(
+            name="full",
+            drive=_make_drive(wheel_separation=0.287, wheel_radius=0.05),
+            sensors={
+                "lidar_2d": {"range_min": 0.1, "range_max": 12.0, "samples": 720, "update_rate": 20.0},
+                "rgb_camera": {"resolution_width": 1280, "resolution_height": 720, "fps": 60},
+            },
+        )
+        env = robot_config_to_sim_env(config)
+
+        assert env["ROBOT_WHEEL_SEPARATION"] == "0.287"
+        assert env["ROBOT_WHEEL_RADIUS"] == "0.05"
+        assert env["ROBOT_HAS_LIDAR"] == "true"
+        assert env["ROBOT_LIDAR_SAMPLES"] == "720"
+        assert env["ROBOT_HAS_CAMERA"] == "true"
+        assert env["ROBOT_CAMERA_WIDTH"] == "1280"
+
+    def test_unknown_sensor_ignored(self) -> None:
+        """Unknown sensor types should not produce env vars (they're not sim-mappable)."""
+        config = RobotConfig(
+            name="custom",
+            drive=_make_drive(),
+            sensors={"gps": {"accuracy": 2.5}},
+        )
+        env = robot_config_to_sim_env(config)
+
+        # GPS has no sim env mapping — should not appear
+        assert not any("GPS" in k for k in env)
+        # Drive params still present
+        assert "ROBOT_WHEEL_SEPARATION" in env
+
+    def test_all_values_are_strings(self) -> None:
+        """Docker env vars must all be strings."""
+        config = RobotConfig(
+            name="test",
+            drive=_make_drive(),
+            sensors={"lidar_2d": {"range_min": 0.12, "range_max": 3.5, "samples": 360, "update_rate": 5.0}},
+        )
+        env = robot_config_to_sim_env(config)
+        for k, v in env.items():
+            assert isinstance(v, str), f"{k}={v!r} is not a string"
+
+
+class TestDockerImageTargetRobotConfig:
+
+    def test_start_passes_robot_env(self, mock_client: MagicMock) -> None:
+        """DockerImageTarget merges robot config env vars into container environment."""
+        config = RobotConfig(
+            name="test",
+            drive=_make_drive(),
+            sensors={"rgb_camera": {"resolution_width": 640, "resolution_height": 480, "fps": 30}},
+        )
+        target = DockerImageTarget(
+            image="my-image:latest",
+            robot_config=config,
+        )
+        target.start()
+
+        call_kwargs = mock_client.containers.run.call_args[1]
+        env = call_kwargs["environment"]
+        assert env["ROBOT_HAS_CAMERA"] == "true"
+        assert env["ROBOT_WHEEL_SEPARATION"] == "0.16"
+
+    def test_start_merges_world_and_robot_env(self, mock_client: MagicMock) -> None:
+        """Both WORLD_NAME and ROBOT_* env vars should be present."""
+        config = RobotConfig(name="test", drive=_make_drive(), sensors={})
+        target = DockerImageTarget(
+            image="my-image:latest",
+            world_env="maze",
+            robot_config=config,
+        )
+        target.start()
+
+        call_kwargs = mock_client.containers.run.call_args[1]
+        env = call_kwargs["environment"]
+        assert env["WORLD_NAME"] == "maze"
+        assert "ROBOT_WHEEL_SEPARATION" in env
