@@ -54,13 +54,6 @@ class TestTopicResult:
 
 class TestReadinessReport:
 
-    def _make_report(self, results, connected=True):
-        return ReadinessReport(
-            connected=connected,
-            topics=results,
-            timestamp=datetime.now(timezone.utc),
-        )
-
     def test_ready_when_all_required_publishing(self):
         checks = [
             TopicCheck(topic="/odom", msg_type="nav_msgs/Odometry"),

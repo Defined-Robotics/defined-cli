@@ -103,8 +103,6 @@ _VERB_CAPABILITIES: dict[str, list[str]] = {
 def build_topic_checks(
     rdf_path: Path | None = None,
     task_path: Path | None = None,
-    world_path: Path | None = None,
-    bridge_config_path: Path | None = None,
 ) -> list[TopicCheck]:
     """Derive expected topics from robot config, task verbs, and bridge config."""
     capabilities: set[str] = {"base"}

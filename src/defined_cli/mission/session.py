@@ -299,9 +299,11 @@ class DefinedSession:
                 report = self._transport.check_readiness(checks)
                 with self._lock:
                     self._latest_readiness = report
-                current_ready = report.ready
-                if current_ready != self._last_health_ready:
-                    self._last_health_ready = current_ready
+                    current_ready = report.ready
+                    changed = current_ready != self._last_health_ready
+                    if changed:
+                        self._last_health_ready = current_ready
+                if changed:
                     self._emit(
                         "health",
                         report.summary(),

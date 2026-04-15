@@ -13,6 +13,10 @@ import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from defined_cli.transport.readiness import ReadinessReport, TopicCheck
 
 
 class ExecutorAborted(Exception):
@@ -116,7 +120,7 @@ class TransportBase(ABC):
             angular_z: Rotation velocity in rad/s.
         """
 
-    def check_readiness(self, checks: list) -> object:
+    def check_readiness(self, checks: list[TopicCheck]) -> ReadinessReport:
         """Check topic readiness by subscribing and waiting for messages.
 
         Default implementation returns a not-connected report.
