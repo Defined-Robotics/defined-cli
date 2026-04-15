@@ -20,7 +20,12 @@ from defined_rdf.robot_config import DriveConfig, RobotConfig
 
 from defined_cli.errors import BackendError
 from defined_cli.target import TargetStatus
-from defined_cli.target.docker_image import DockerImageTarget, robot_config_to_sim_env
+from defined_cli.target.docker_image import (
+    DockerImageTarget,
+    _compute_config_hash,
+    _CONFIG_HASH_LABEL,
+    robot_config_to_sim_env,
+)
 
 
 @pytest.fixture()
@@ -102,13 +107,13 @@ class TestDockerImageTargetStart:
     def test_start_passes_world_env(self, mock_client: MagicMock) -> None:
         """Preconditions: world_env is set to 'warehouse'.
         Tests: start() passes WORLD_NAME as environment variable.
-        Success: containers.run receives environment={'WORLD_NAME': 'warehouse'}.
+        Success: containers.run receives environment containing WORLD_NAME.
         """
         target = DockerImageTarget(image="my-image:latest", world_env="warehouse")
         target.start()
 
         call_kwargs = mock_client.containers.run.call_args[1]
-        assert call_kwargs["environment"] == {"WORLD_NAME": "warehouse"}
+        assert call_kwargs["environment"]["WORLD_NAME"] == "warehouse"
 
     def test_start_bind_mounts_bt_xml_dir(self, mock_client: MagicMock, tmp_path: Path) -> None:
         """Preconditions: bt_xml_dir points to a host directory.
@@ -147,12 +152,14 @@ class TestDockerImageTargetStart:
         call_kwargs = mock_client.containers.run.call_args[1]
         assert call_kwargs["volumes"] is None
 
-    def test_start_removes_existing_container(self, mock_client: MagicMock) -> None:
-        """Preconditions: A stale container named 'defined_sim' exists.
+    def test_start_removes_existing_container_with_different_hash(self, mock_client: MagicMock) -> None:
+        """Preconditions: A stale container with a different config hash exists.
         Tests: start() stops and removes it before creating a new one.
         Success: container.stop() and container.remove() called before containers.run().
         """
         stale = MagicMock()
+        stale.labels = {_CONFIG_HASH_LABEL: "old_hash_value"}
+        stale.status = "running"
         mock_client.containers.get.side_effect = None
         mock_client.containers.get.return_value = stale
 
@@ -429,3 +436,150 @@ class TestDockerImageTargetRobotConfig:
         env = call_kwargs["environment"]
         assert env["WORLD_NAME"] == "maze"
         assert "ROBOT_WHEEL_SEPARATION" in env
+
+
+# ---------------------------------------------------------------------------
+# _compute_config_hash()
+# ---------------------------------------------------------------------------
+
+
+class TestComputeConfigHash:
+
+    def test_deterministic(self) -> None:
+        """Same inputs always produce the same hash."""
+        h1 = _compute_config_hash("img:1", "cmd", {"A": "1"})
+        h2 = _compute_config_hash("img:1", "cmd", {"A": "1"})
+        assert h1 == h2
+
+    def test_different_image_different_hash(self) -> None:
+        """Changing the image changes the hash."""
+        h1 = _compute_config_hash("img:1", "cmd", {})
+        h2 = _compute_config_hash("img:2", "cmd", {})
+        assert h1 != h2
+
+    def test_different_env_different_hash(self) -> None:
+        """Changing env vars changes the hash."""
+        h1 = _compute_config_hash("img:1", "cmd", {"WORLD_NAME": "maze"})
+        h2 = _compute_config_hash("img:1", "cmd", {"WORLD_NAME": "room"})
+        assert h1 != h2
+
+    def test_different_command_different_hash(self) -> None:
+        """Changing the command (e.g. spawn pose) changes the hash."""
+        h1 = _compute_config_hash("img:1", "cmd x:=0 y:=0", {})
+        h2 = _compute_config_hash("img:1", "cmd x:=1 y:=2", {})
+        assert h1 != h2
+
+    def test_hash_length(self) -> None:
+        """Hash is 12 hex characters."""
+        h = _compute_config_hash("img:1", "cmd", {})
+        assert len(h) == 12
+        assert all(c in "0123456789abcdef" for c in h)
+
+    def test_env_key_order_irrelevant(self) -> None:
+        """Dict ordering doesn't affect the hash (sort_keys=True)."""
+        h1 = _compute_config_hash("img:1", "cmd", {"A": "1", "B": "2"})
+        h2 = _compute_config_hash("img:1", "cmd", {"B": "2", "A": "1"})
+        assert h1 == h2
+
+
+# ---------------------------------------------------------------------------
+# Config-hash container lifecycle
+# ---------------------------------------------------------------------------
+
+
+class TestConfigHashLifecycle:
+
+    def test_reuse_running_container_with_same_hash(self, mock_client: MagicMock) -> None:
+        """Container with matching hash and running — skip recreation."""
+        target = DockerImageTarget(image="my-image:latest")
+        command, env, _ = target._build_run_args()
+        expected_hash = _compute_config_hash("my-image:latest", command, env)
+
+        existing = MagicMock()
+        existing.labels = {_CONFIG_HASH_LABEL: expected_hash}
+        existing.status = "running"
+        mock_client.containers.get.side_effect = None
+        mock_client.containers.get.return_value = existing
+
+        target.start()
+
+        # Should NOT create a new container
+        mock_client.containers.run.assert_not_called()
+        # Should NOT stop the existing one
+        existing.stop.assert_not_called()
+
+    def test_restart_stopped_container_with_same_hash(self, mock_client: MagicMock) -> None:
+        """Container with matching hash but stopped — restart it."""
+        target = DockerImageTarget(image="my-image:latest")
+        command, env, _ = target._build_run_args()
+        expected_hash = _compute_config_hash("my-image:latest", command, env)
+
+        existing = MagicMock()
+        existing.labels = {_CONFIG_HASH_LABEL: expected_hash}
+        existing.status = "exited"
+        mock_client.containers.get.side_effect = None
+        mock_client.containers.get.return_value = existing
+
+        target.start()
+
+        # Should restart, not recreate
+        existing.start.assert_called_once()
+        mock_client.containers.run.assert_not_called()
+
+    def test_rebuild_on_hash_mismatch(self, mock_client: MagicMock) -> None:
+        """Container with different hash — tear down and rebuild."""
+        existing = MagicMock()
+        existing.labels = {_CONFIG_HASH_LABEL: "stale_hash_00"}
+        existing.status = "running"
+        mock_client.containers.get.side_effect = None
+        mock_client.containers.get.return_value = existing
+
+        target = DockerImageTarget(image="my-image:latest")
+        target.start()
+
+        existing.stop.assert_called_once()
+        existing.remove.assert_called_once()
+        mock_client.containers.run.assert_called_once()
+
+    def test_rebuild_when_no_hash_label(self, mock_client: MagicMock) -> None:
+        """Existing container without the hash label — treat as stale, rebuild."""
+        existing = MagicMock()
+        existing.labels = {}
+        existing.status = "running"
+        mock_client.containers.get.side_effect = None
+        mock_client.containers.get.return_value = existing
+
+        target = DockerImageTarget(image="my-image:latest")
+        target.start()
+
+        existing.stop.assert_called_once()
+        existing.remove.assert_called_once()
+        mock_client.containers.run.assert_called_once()
+
+    def test_fresh_start_no_existing_container(self, mock_client: MagicMock) -> None:
+        """No existing container — create new one with hash label."""
+        target = DockerImageTarget(image="my-image:latest")
+        target.start()
+
+        call_kwargs = mock_client.containers.run.call_args[1]
+        assert _CONFIG_HASH_LABEL in call_kwargs["labels"]
+        assert len(call_kwargs["labels"][_CONFIG_HASH_LABEL]) == 12
+
+    def test_config_change_detected_across_robots(self, mock_client: MagicMock) -> None:
+        """Switching from burger to burger_cam produces different hash."""
+        burger = RobotConfig(name="burger", drive=_make_drive(), sensors={})
+        burger_cam = RobotConfig(
+            name="burger_cam",
+            drive=_make_drive(),
+            sensors={"rgb_camera": {"resolution_width": 640, "resolution_height": 480, "fps": 30}},
+        )
+
+        t1 = DockerImageTarget(image="img:1", robot_config=burger)
+        t2 = DockerImageTarget(image="img:1", robot_config=burger_cam)
+
+        cmd1, env1, _ = t1._build_run_args()
+        cmd2, env2, _ = t2._build_run_args()
+
+        h1 = _compute_config_hash("img:1", cmd1, env1)
+        h2 = _compute_config_hash("img:1", cmd2, env2)
+        assert h1 != h2
