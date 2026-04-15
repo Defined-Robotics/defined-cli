@@ -287,3 +287,94 @@ class TestPublishVelocity:
 
         transport.publish_velocity(0.0, 0.0)
         MockTopic.return_value.publish.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# check_readiness
+# ---------------------------------------------------------------------------
+
+from defined_cli.transport.readiness import ReadinessReport, TopicCheck, TopicResult
+
+
+class TestCheckReadinessBase:
+    def test_default_returns_not_connected(self):
+        from defined_cli.transport import TransportBase
+
+        class _StubTransport(TransportBase):
+            def connect(self): ...
+            def disconnect(self): ...
+            def send_task(self, bt_xml_path): ...
+            def subscribe_status(self, callback): ...
+            def wait_ready(self, timeout=10.0): return True
+
+        base = _StubTransport()
+        report = base.check_readiness([])
+        assert report.connected is False
+        assert report.topics == []
+
+
+class TestCheckReadinessRosbridge:
+
+    @patch("defined_cli.transport.rosbridge.roslibpy.Topic")
+    @patch("defined_cli.transport.rosbridge.roslibpy.Ros")
+    @patch("defined_cli.transport.rosbridge._get_reactor")
+    def test_healthy_topic_returns_publishing(self, mock_get_reactor, MockRos, MockTopic, transport):
+        mock_reactor = MagicMock()
+        mock_reactor.callFromThread.side_effect = lambda fn, *a, **kw: fn(*a, **kw)
+        mock_get_reactor.return_value = mock_reactor
+        _patch_connect(MockRos.return_value)
+        transport.connect()
+
+        def _fire_message(callback):
+            callback({"data": "hello"})
+        MockTopic.return_value.subscribe.side_effect = _fire_message
+
+        checks = [TopicCheck(topic="/rosout", msg_type="rcl_interfaces/Log", timeout=1.0)]
+        report = transport.check_readiness(checks)
+
+        assert report.connected is True
+        assert len(report.topics) == 1
+        assert report.topics[0].publishing is True
+        assert report.topics[0].latency_ms is not None
+
+    @patch("defined_cli.transport.rosbridge.roslibpy.Topic")
+    @patch("defined_cli.transport.rosbridge.roslibpy.Ros")
+    @patch("defined_cli.transport.rosbridge._get_reactor")
+    def test_timeout_topic_returns_not_publishing(self, mock_get_reactor, MockRos, MockTopic, transport):
+        mock_reactor = MagicMock()
+        mock_reactor.callFromThread.side_effect = lambda fn, *a, **kw: fn(*a, **kw)
+        mock_get_reactor.return_value = mock_reactor
+        _patch_connect(MockRos.return_value)
+        transport.connect()
+
+        MockTopic.return_value.subscribe.side_effect = lambda cb: None
+
+        checks = [TopicCheck(topic="/map", msg_type="nav_msgs/OccupancyGrid", timeout=0.1)]
+        report = transport.check_readiness(checks)
+
+        assert report.connected is True
+        assert len(report.topics) == 1
+        assert report.topics[0].publishing is False
+        assert report.topics[0].error is not None
+
+    def test_returns_not_connected_when_disconnected(self, transport):
+        checks = [TopicCheck(topic="/odom", msg_type="nav_msgs/Odometry")]
+        report = transport.check_readiness(checks)
+        assert report.connected is False
+
+    @patch("defined_cli.transport.rosbridge.roslibpy.Topic")
+    @patch("defined_cli.transport.rosbridge.roslibpy.Ros")
+    @patch("defined_cli.transport.rosbridge._get_reactor")
+    def test_unsubscribes_after_check(self, mock_get_reactor, MockRos, MockTopic, transport):
+        mock_reactor = MagicMock()
+        mock_reactor.callFromThread.side_effect = lambda fn, *a, **kw: fn(*a, **kw)
+        mock_get_reactor.return_value = mock_reactor
+        _patch_connect(MockRos.return_value)
+        transport.connect()
+
+        MockTopic.return_value.subscribe.side_effect = lambda cb: cb({"data": "ok"})
+
+        checks = [TopicCheck(topic="/rosout", msg_type="rcl_interfaces/Log", timeout=1.0)]
+        transport.check_readiness(checks)
+
+        MockTopic.return_value.unsubscribe.assert_called()

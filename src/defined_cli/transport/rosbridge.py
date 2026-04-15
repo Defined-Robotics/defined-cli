@@ -251,6 +251,62 @@ class RosbridgeTransport(TransportBase):
             raise ExecutorAborted()
         return ready.is_set()
 
+    def check_readiness(self, checks: list) -> object:
+        from datetime import datetime, timezone
+        from defined_cli.transport.readiness import ReadinessReport, TopicCheck, TopicResult
+
+        if self._ros is None or not self._ros.is_connected:
+            return ReadinessReport(
+                connected=False, topics=[], checks=checks,
+                timestamp=datetime.now(timezone.utc),
+            )
+
+        probes: list[tuple[TopicCheck, threading.Event, float, list[float | None]]] = []
+        roslibpy_topics: list[roslibpy.Topic] = []
+
+        for check in checks:
+            ready_event = threading.Event()
+            received_delta: list[float | None] = [None]
+            start = time.monotonic()
+
+            def _on_msg(_msg, _evt=ready_event, _recv=received_delta, _t0=start):
+                if not _evt.is_set():
+                    _recv[0] = time.monotonic() - _t0
+                    _evt.set()
+
+            topic = roslibpy.Topic(self._ros, check.topic, check.msg_type)
+            self._reactor.callFromThread(topic.subscribe, _on_msg)
+            roslibpy_topics.append(topic)
+            probes.append((check, ready_event, start, received_delta))
+
+        max_timeout = max((c.timeout for c in checks), default=10.0)
+        deadline = time.monotonic() + max_timeout
+        for _, evt, _, _ in probes:
+            remaining = max(0, deadline - time.monotonic())
+            evt.wait(timeout=remaining)
+
+        results: list[TopicResult] = []
+        for i, (check, evt, _, received_delta) in enumerate(probes):
+            if evt.is_set() and received_delta[0] is not None:
+                results.append(TopicResult(
+                    topic=check.topic, publishing=True,
+                    latency_ms=round(received_delta[0] * 1000, 1),
+                ))
+            else:
+                results.append(TopicResult(
+                    topic=check.topic, publishing=False, latency_ms=None,
+                    error=f"timeout ({check.timeout}s)",
+                ))
+            try:
+                self._reactor.callFromThread(roslibpy_topics[i].unsubscribe)
+            except Exception:
+                _log.debug("Failed to unsubscribe %s", check.topic, exc_info=True)
+
+        return ReadinessReport(
+            connected=True, topics=results, checks=checks,
+            timestamp=datetime.now(timezone.utc),
+        )
+
     def fetch_pose(self, timeout: float = 5.0, topic: str = "/odom") -> tuple[float, float]:
         """Fetch robot (x, y) using the existing rosbridge connection.
 
