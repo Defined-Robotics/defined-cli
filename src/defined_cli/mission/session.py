@@ -54,6 +54,7 @@ import yaml
 _log = logging.getLogger(__name__)
 
 from defined_cli.mission.events import ConnectionStatus, MissionStatus, SessionEvent
+from defined_cli.transport.readiness import ReadinessReport, build_topic_checks
 from defined_cli.mission.resolver import ResolverError, resolve_references
 from defined_cli.state.blackboard import Blackboard
 from defined_cli.state.model import MissionRecord, RobotStatus, StateSnapshot
@@ -117,6 +118,11 @@ class DefinedSession:
         self._last_rdf: Path | None = None
         self._last_verbs_dir: Path | None = None
         self._last_param_overrides: dict | None = None
+
+        self._latest_readiness: ReadinessReport | None = None
+        self._health_thread: threading.Thread | None = None
+        self._health_stop = threading.Event()
+        self._last_health_ready: bool | None = None
 
         self._watchdog_thread: threading.Thread | None = None
         self._watchdog_stop = threading.Event()
@@ -184,9 +190,11 @@ class DefinedSession:
 
         self._emit("connection", "Connected")
         self._start_watchdog()
+        self._start_health_monitor()
 
     def disconnect(self) -> None:
         """Stop watchdog, disconnect transport, update state."""
+        self._stop_health_monitor()
         self._stop_watchdog()
         try:
             self._transport.disconnect()
@@ -265,6 +273,47 @@ class DefinedSession:
                     )
 
     # ------------------------------------------------------------------
+    # Health monitor
+    # ------------------------------------------------------------------
+
+    def _start_health_monitor(self) -> None:
+        """Start background health check loop (10s interval)."""
+        self._health_stop.clear()
+        self._health_thread = threading.Thread(
+            target=self._health_loop, daemon=True,
+        )
+        self._health_thread.start()
+
+    def _stop_health_monitor(self) -> None:
+        """Stop the health monitor."""
+        self._health_stop.set()
+        if self._health_thread is not None:
+            self._health_thread.join(timeout=15.0)
+            self._health_thread = None
+
+    def _health_loop(self) -> None:
+        """Background loop: run readiness check every 10s."""
+        checks = build_topic_checks()
+        while not self._health_stop.is_set():
+            try:
+                report = self._transport.check_readiness(checks)
+                with self._lock:
+                    self._latest_readiness = report
+                    current_ready = report.ready
+                    changed = current_ready != self._last_health_ready
+                    if changed:
+                        self._last_health_ready = current_ready
+                if changed:
+                    self._emit(
+                        "health",
+                        report.summary(),
+                        detail={"ready": current_ready, "failed": [r.topic for r in report.failed]},
+                    )
+            except Exception:
+                _log.debug("Health check failed", exc_info=True)
+            self._health_stop.wait(timeout=10.0)
+
+    # ------------------------------------------------------------------
     # Compile (standalone, no transport needed)
     # ------------------------------------------------------------------
 
@@ -324,13 +373,25 @@ class DefinedSession:
         thread.start()
 
     def stop_mission(self) -> None:
-        """Stop the current mission. No-op if nothing running."""
+        """Stop the current mission gracefully. No-op if nothing running."""
+        with self._lock:
+            was_running = self._mission_status in (
+                MissionStatus.COMPILING,
+                MissionStatus.DEPLOYING,
+                MissionStatus.RUNNING,
+            )
+        if not was_running:
+            return
+
+        # Cancel the BT executor (halts running nodes, cancels Nav2 goals)
+        self._transport.cancel_task()
+        # Zero velocity so the robot stops moving
+        self._transport.publish_velocity(0.0, 0.0)
+        # Signal mission thread to exit
         self._stop_event.set()
         self._done_event.set()
-        with self._lock:
-            was_running = self._mission_status == MissionStatus.RUNNING
-        if was_running:
-            self._emit("mission", "Mission stopped by user")
+
+        self._emit("mission", "Mission stopped by user")
 
     def restart_mission(self) -> None:
         """Re-run the last mission with the same arguments."""
@@ -468,6 +529,17 @@ class DefinedSession:
                 detail={"steps": [s.label for s in result.steps]},
             )
 
+            # Pre-mission health warning
+            with self._lock:
+                readiness = self._latest_readiness
+            if readiness is not None and not readiness.ready:
+                failed_topics = ", ".join(r.topic for r in readiness.failed)
+                self._emit(
+                    "health",
+                    f"Warning: topics not publishing: {failed_topics}",
+                    suggestion="Some subsystems may be down. Mission will proceed.",
+                )
+
             if self._stop_event.is_set():
                 outcome = "ABORTED"
                 return
@@ -604,6 +676,12 @@ class DefinedSession:
     # ------------------------------------------------------------------
     # Read-only properties (all thread-safe)
     # ------------------------------------------------------------------
+
+    @property
+    def latest_readiness(self) -> ReadinessReport | None:
+        """Most recent readiness check result."""
+        with self._lock:
+            return self._latest_readiness
 
     @property
     def connection_status(self) -> ConnectionStatus:

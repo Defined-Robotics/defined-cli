@@ -13,6 +13,10 @@ import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from defined_cli.transport.readiness import ReadinessReport, TopicCheck
 
 
 class ExecutorAborted(Exception):
@@ -115,6 +119,18 @@ class TransportBase(ABC):
             linear_x: Forward/backward velocity in m/s.
             angular_z: Rotation velocity in rad/s.
         """
+
+    def check_readiness(self, checks: list[TopicCheck]) -> ReadinessReport:
+        """Check topic readiness by subscribing and waiting for messages.
+
+        Default implementation returns a not-connected report.
+        """
+        from defined_cli.transport.readiness import ReadinessReport
+        from datetime import datetime, timezone
+        return ReadinessReport(
+            connected=False, topics=[], checks=[],
+            timestamp=datetime.now(timezone.utc),
+        )
 
     def fetch_pose(self, timeout: float = 5.0, topic: str = "/odom") -> tuple[float, float]:
         """Fetch the robot's current (x, y) position via the existing connection.

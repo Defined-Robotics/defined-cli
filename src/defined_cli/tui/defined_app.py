@@ -124,7 +124,14 @@ class DefinedApp(App):
         Binding("ctrl+e", "emergency_stop", "E-STOP", show=True, priority=True),
     ]
 
-    def __init__(self, session: DefinedSession, rdf: Path | None = None, verbs_dir: Path | None = None, **kwargs) -> None:
+    def __init__(
+        self,
+        session: DefinedSession,
+        rdf: Path | None = None,
+        verbs_dir: Path | None = None,
+        world_name: str | None = None,
+        **kwargs,
+    ) -> None:
         super().__init__(**kwargs)
         self._session = session
         self._rdf = rdf
@@ -136,6 +143,7 @@ class DefinedApp(App):
 
         # Derive robot name from RDF filename
         self._robot_name = rdf.stem.replace(".rdf", "") if rdf else "unknown"
+        self._world_name = world_name or "none"
         self._last_activity_msg: str = ""  # dedup consecutive identical log lines
         self._last_event_msg: str = ""  # dedup session events by message content
 
@@ -156,9 +164,10 @@ class DefinedApp(App):
         self._session.add_listener(self._on_session_event)
         self._refresh_timer = self.set_interval(0.25, self._tick)
 
-        # Set robot name on status bar
+        # Set robot + world name on status bar
         status_bar = self.query_one("#status-bar", StatusBar)
         status_bar.robot_name = self._robot_name
+        status_bar.world_name = self._world_name
 
         # Welcome message
         if self._session.last_mission is None:
@@ -222,6 +231,7 @@ class DefinedApp(App):
             "executor": "cyan",
             "mission": "green",
             "error": "red",
+            "health": "yellow",
         }.get(event.category, "white")
         self._log_activity(f"[dim]{ts}[/dim]  [{color}]{event.message}[/{color}]")
 
@@ -235,6 +245,13 @@ class DefinedApp(App):
         # Connection
         conn = self._session.connection_status
         status_bar.connection = conn.value.title()
+
+        # Health
+        readiness = self._session.latest_readiness
+        if readiness is not None:
+            status_bar.health = readiness.summary()
+        else:
+            status_bar.health = ""
 
         # Teleop mode overrides task info
         if self._teleop_mode:
@@ -307,7 +324,21 @@ class DefinedApp(App):
             conn = self._session.connection_status.value
             mission = self._session.mission_status.value
             pois = len(self._session.list_pois())
-            self._log_activity(f"Connection: {conn} | Mission: {mission} | POIs: {pois}")
+            lines = [f"Connection: {conn} | Mission: {mission} | POIs: {pois}"]
+
+            readiness = self._session.latest_readiness
+            if readiness is not None:
+                lines.append(f"\n[bold]Health: {readiness.summary()}[/bold]")
+                for result in readiness.topics:
+                    if result.publishing:
+                        latency = f"{result.latency_ms:.0f}ms" if result.latency_ms else "?"
+                        lines.append(f"  [green]✓[/green] {result.topic:<25} {latency}")
+                    else:
+                        lines.append(f"  [red]✗[/red] {result.topic:<25} {result.error or 'not publishing'}")
+            else:
+                lines.append("\nHealth: [dim]no check yet[/dim]")
+
+            self._log_activity("\n".join(lines))
             return
 
         if cmd.kind == CommandKind.RUN:
