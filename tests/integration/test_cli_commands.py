@@ -117,3 +117,12 @@ class TestWorldCommands:
         assert "add" in result.output
         assert "list" in result.output
         assert "mark" in result.output
+
+
+class TestCheckCommand:
+
+    def test_check_command_exists(self):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["check", "--help"])
+        assert result.exit_code == 0
+        assert "readiness" in result.output.lower() or "health" in result.output.lower() or "topic" in result.output.lower()

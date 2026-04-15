@@ -4,6 +4,7 @@ Entry points:
 - ``defined``           — launch unified TUI (auto-connect sim)
 - ``defined --target hw`` — launch TUI, connect hardware
 - ``defined compile``   — standalone compiler (no TUI, for CI)
+- ``defined check``     — verify simulation readiness (topic health)
 - ``defined world``     — POI management (add, list, mark, watch)
 
 Usage:
@@ -154,7 +155,8 @@ def _launch_tui(
 
     _console.print("[dim]Starting TUI...[/]")
     try:
-        app = DefinedApp(session, rdf=rdf, verbs_dir=verbs_dir)
+        world_name = world.name if world else None
+        app = DefinedApp(session, rdf=rdf, verbs_dir=verbs_dir, world_name=world_name)
         app.run()
     except KeyboardInterrupt:
         pass
@@ -189,6 +191,68 @@ def compile(ctx: click.Context, task: Path, rdf: Path, output: Path | None, verb
     except DefinedError as exc:
         _show_error(exc, verbose=verbose)
         raise SystemExit(1) from exc
+
+
+# ---------------------------------------------------------------------------
+# check (readiness probe — topic health)
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+@click.option("--host", default="localhost", help="Rosbridge host.")
+@click.option("--port", default=9090, type=int, help="Rosbridge port.")
+@click.option("--rdf", type=click.Path(exists=True, path_type=Path), default=None, help="Robot RDF YAML.")
+@click.option("--task", type=click.Path(exists=True, path_type=Path), default=None, help="Task YAML (to derive expected topics).")
+@click.option("--timeout", default=10.0, type=float, help="Per-topic timeout in seconds.")
+def check(host: str, port: int, rdf: Path | None, task: Path | None, timeout: float) -> None:
+    """Check simulation readiness — verify expected topics are publishing."""
+    from .transport.readiness import build_topic_checks, TopicCheck
+    from .transport.rosbridge import RosbridgeTransport
+
+    checks = build_topic_checks(rdf_path=rdf, task_path=task)
+    if timeout != 10.0:
+        checks = [
+            TopicCheck(topic=c.topic, msg_type=c.msg_type, required=c.required, timeout=timeout)
+            for c in checks
+        ]
+
+    transport = RosbridgeTransport(host=host, port=port)
+    _console.print(f"[dim]Connecting to ws://{host}:{port}...[/dim]")
+    try:
+        transport.connect()
+    except DefinedError as exc:
+        _show_error(exc)
+        raise SystemExit(1) from exc
+
+    _console.print(f"[dim]Checking {len(checks)} topics (timeout={timeout}s)...[/dim]\n")
+    report = transport.check_readiness(checks)
+    transport.disconnect()
+
+    table = Table(title=f"Health: {report.summary()}")
+    table.add_column("Topic", style="cyan")
+    table.add_column("Status", justify="center")
+    table.add_column("Latency", justify="right", style="dim")
+    table.add_column("Error", style="red")
+
+    for result in report.topics:
+        if result.publishing:
+            status = "[green]✓[/green]"
+            latency = f"{result.latency_ms:.0f}ms" if result.latency_ms else ""
+            error = ""
+        else:
+            status = "[red]✗[/red]"
+            latency = ""
+            error = result.error or "not publishing"
+        table.add_row(result.topic, status, latency, error)
+
+    _console.print(table)
+
+    if report.ready:
+        _console.print("\n[green]All required topics OK.[/green]")
+        raise SystemExit(0)
+    else:
+        _console.print(f"\n[red]Failed topics: {', '.join(r.topic for r in report.failed)}[/red]")
+        raise SystemExit(1)
 
 
 # ---------------------------------------------------------------------------
