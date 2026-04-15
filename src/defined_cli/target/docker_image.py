@@ -150,8 +150,8 @@ class DockerImageTarget(TargetBase):
                 name=_CONTAINER_NAME,
                 detach=True,
                 ports={
-                    "9090/tcp": self._port,
-                    "8765/tcp": 8765,
+                    "9090/tcp": ("127.0.0.1", self._port),
+                    "8765/tcp": ("127.0.0.1", 8765),
                 },
                 volumes=volumes or None,
                 environment=environment or None,
