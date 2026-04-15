@@ -46,7 +46,7 @@ class SessionEvent:
     """
 
     timestamp: datetime
-    category: Literal["connection", "executor", "mission", "error"]
+    category: Literal["connection", "executor", "mission", "error", "health"]
     message: str
     suggestion: str | None
     detail: dict[str, Any] | None

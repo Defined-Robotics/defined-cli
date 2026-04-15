@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, PropertyMock, patch, call
 
@@ -27,8 +28,14 @@ def mock_target():
 
 @pytest.fixture
 def mock_transport():
+    from defined_cli.transport.readiness import ReadinessReport
     transport = MagicMock(spec=TransportBase)
     transport.is_connected = True
+    # Default readiness so health monitor doesn't emit MagicMock messages
+    transport.check_readiness.return_value = ReadinessReport(
+        connected=True, topics=[], checks=[],
+        timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
     return transport
 
 
@@ -150,7 +157,7 @@ class TestSessionEvents:
         for e in events:
             assert isinstance(e, SessionEvent)
             assert e.timestamp is not None
-            assert e.category in ("connection", "executor", "mission", "error")
+            assert e.category in ("connection", "executor", "mission", "error", "health")
             assert isinstance(e.message, str)
         session.disconnect()
 
@@ -442,4 +449,54 @@ class TestSessionParamOverrides:
         assert kwargs.get("param_overrides") is None
 
         session.stop_mission()
+        session.disconnect()
+
+
+from defined_cli.transport.readiness import ReadinessReport, TopicCheck, TopicResult
+
+
+class TestHealthMonitor:
+
+    def test_latest_readiness_initially_none(self, session):
+        assert session.latest_readiness is None
+
+    def test_health_monitor_runs_after_connect(self, session, mock_transport):
+        mock_transport.check_readiness.return_value = ReadinessReport(
+            connected=True,
+            topics=[TopicResult(topic="/odom", publishing=True, latency_ms=10.0)],
+            checks=[TopicCheck(topic="/odom", msg_type="nav_msgs/Odometry")],
+            timestamp=datetime.now(timezone.utc),
+        )
+        session.connect()
+        time.sleep(1.0)
+        assert session.latest_readiness is not None
+        assert session.latest_readiness.connected is True
+        session.disconnect()
+
+    def test_health_monitor_stops_on_disconnect(self, session, mock_transport):
+        mock_transport.check_readiness.return_value = ReadinessReport(
+            connected=True, topics=[], checks=[],
+            timestamp=datetime.now(timezone.utc),
+        )
+        session.connect()
+        time.sleep(0.5)
+        session.disconnect()
+        assert session._health_thread is None or not session._health_thread.is_alive()
+
+    def test_health_emits_event_on_status_change(self, session, mock_transport):
+        healthy_report = ReadinessReport(
+            connected=True,
+            topics=[TopicResult(topic="/odom", publishing=True, latency_ms=10.0)],
+            checks=[TopicCheck(topic="/odom", msg_type="nav_msgs/Odometry")],
+            timestamp=datetime.now(timezone.utc),
+        )
+        mock_transport.check_readiness.return_value = healthy_report
+
+        events = []
+        session.add_listener(events.append)
+        session.connect()
+        time.sleep(1.0)
+
+        health_events = [e for e in events if e.category == "health"]
+        assert len(health_events) >= 1
         session.disconnect()
