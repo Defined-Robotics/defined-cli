@@ -359,3 +359,34 @@ class TestTelePanel:
         panel.set_active_direction("forward")
         panel.set_active_direction(None)
         assert panel._active_direction is None
+
+
+class TestStatusBarHealth:
+
+    def test_default_health_shows_checking(self):
+        bar = StatusBar()
+        text = bar.render()
+        assert "checking" in text.lower() or "…" in text
+
+    def test_health_all_ok(self):
+        bar = StatusBar()
+        bar.health = "8/8 topics OK"
+        text = bar.render()
+        assert "8/8" in text
+        assert "[green]" in text or "✓" in text
+
+    def test_health_degraded(self):
+        bar = StatusBar()
+        bar.health = "7/8 topics — /map MISSING"
+        text = bar.render()
+        assert "/map" in text
+        assert "[yellow]" in text or "⚠" in text
+
+    def test_health_appears_in_render(self):
+        bar = StatusBar()
+        bar.health = "6/6 topics OK"
+        bar.connection = "Connected"
+        text = bar.render()
+        conn_pos = text.find("Connected")
+        health_pos = text.find("6/6")
+        assert health_pos > conn_pos
