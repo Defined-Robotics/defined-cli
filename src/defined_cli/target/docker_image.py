@@ -11,6 +11,8 @@ from the host output directory into ``/bt_xml`` in the container.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from pathlib import Path
 
@@ -26,6 +28,7 @@ _log = logging.getLogger(__name__)
 
 _CONTAINER_NAME = "defined_sim"
 _CONTAINER_BT_XML_PATH = "/bt_xml"
+_CONFIG_HASH_LABEL = "defined.config_hash"
 
 # Base command to launch the full simulation stack inside the container.
 # The image's own CMD is just "bash" (interactive use), so we must override.
@@ -89,6 +92,22 @@ def robot_config_to_sim_env(config: RobotConfig) -> dict[str, str]:
     return env
 
 
+def _compute_config_hash(
+    image: str,
+    command: str,
+    environment: dict[str, str],
+) -> str:
+    """Compute a deterministic hash of all inputs that affect the container.
+
+    Returns a 12-character hex digest.
+    """
+    blob = json.dumps(
+        {"image": image, "command": command, "env": environment},
+        sort_keys=True,
+    )
+    return hashlib.sha256(blob.encode()).hexdigest()[:12]
+
+
 class DockerImageTarget(TargetBase):
     """Backend target that runs a pre-built Docker image.
 
@@ -120,10 +139,8 @@ class DockerImageTarget(TargetBase):
         self._robot_config = robot_config
         self._client = _get_client()
 
-    def start(self) -> None:
-        """Pull image if needed, remove stale container, and start."""
-        self._remove_existing()
-
+    def _build_run_args(self) -> tuple[str, dict[str, str], dict[str, dict[str, str]]]:
+        """Build the command, environment, and volumes for container creation."""
         command = _BASE_COMMAND
         if self._spawn is not None:
             x, y, yaw = self._spawn
@@ -143,6 +160,38 @@ class DockerImageTarget(TargetBase):
                 "mode": "rw",
             }
 
+        return command, environment, volumes
+
+    def start(self) -> None:
+        """Start the sim container, reusing it if config hasn't changed.
+
+        Computes a hash of all config inputs (image, env vars, spawn).
+        If a container already exists with the same hash, it is reused.
+        If the hash differs, the old container is replaced.
+        """
+        command, environment, volumes = self._build_run_args()
+        config_hash = _compute_config_hash(self._image, command, environment)
+
+        # Check for existing container
+        existing = self._get_existing()
+        if existing is not None:
+            existing_hash = existing.labels.get(_CONFIG_HASH_LABEL)
+            if existing_hash == config_hash:
+                if existing.status == "running":
+                    _log.info("Container config unchanged, reusing %s", _CONTAINER_NAME)
+                    return
+                # Same config but stopped — restart it
+                _log.info("Restarting stopped container %s (config unchanged)", _CONTAINER_NAME)
+                existing.start()
+                return
+            # Config changed — tear down and rebuild
+            _log.info(
+                "Config changed (%s → %s), rebuilding container",
+                existing_hash,
+                config_hash,
+            )
+            self._remove_existing()
+
         try:
             self._client.containers.run(
                 self._image,
@@ -155,6 +204,7 @@ class DockerImageTarget(TargetBase):
                 },
                 volumes=volumes or None,
                 environment=environment or None,
+                labels={_CONFIG_HASH_LABEL: config_hash},
             )
             _log.info("Started container %s from %s", _CONTAINER_NAME, self._image)
         except docker.errors.ImageNotFound as exc:
@@ -203,14 +253,21 @@ class DockerImageTarget(TargetBase):
 
     # -- internals --
 
+    def _get_existing(self):
+        """Return the existing container, or None."""
+        try:
+            return self._client.containers.get(_CONTAINER_NAME)
+        except docker.errors.NotFound:
+            return None
+
     def _remove_existing(self) -> None:
         """Remove a stale container if it exists."""
+        container = self._get_existing()
+        if container is None:
+            return
         try:
-            container = self._client.containers.get(_CONTAINER_NAME)
             container.stop()
             container.remove()
-        except docker.errors.NotFound:
-            pass
         except docker.errors.APIError as exc:
             _log.warning("Could not remove stale container: %s", exc)
 
