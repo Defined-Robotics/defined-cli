@@ -10,6 +10,7 @@ Covers:
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -51,7 +52,8 @@ class TestTargetSelection:
         assert isinstance(target, DockerImageTarget)
         assert target._world_env == "warehouse"
 
-    def test_manifest_without_sim_uses_sim_target(self) -> None:
+    @patch("defined_cli.target.sim.SimTarget._find_compose_file", return_value=Path("/fake/docker-compose.yml"))
+    def test_manifest_without_sim_uses_sim_target(self, _mock_find) -> None:
         """Preconditions: Manifest exists but has no sim section.
         Tests: select_target falls back to SimTarget.
         Success: Returned target is SimTarget.
@@ -64,7 +66,8 @@ class TestTargetSelection:
         target = select_target(manifest=manifest)
         assert isinstance(target, SimTarget)
 
-    def test_no_manifest_uses_sim_target(self) -> None:
+    @patch("defined_cli.target.sim.SimTarget._find_compose_file", return_value=Path("/fake/docker-compose.yml"))
+    def test_no_manifest_uses_sim_target(self, _mock_find) -> None:
         """Preconditions: No manifest provided (None).
         Tests: select_target defaults to SimTarget for backward compat.
         Success: Returned target is SimTarget.
