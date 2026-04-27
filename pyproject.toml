@@ -33,5 +33,9 @@ defined = "defined_cli.main:cli"
 [tool.hatch.build.targets.wheel]
 packages = ["src/defined_cli"]
 
+[tool.uv.sources]
+defined-compiler = { git = "https://github.com/Defined-Robotics/verb-compiler", branch = "trunk" }
+defined-rdf = { git = "https://github.com/Defined-Robotics/rdf", branch = "trunk" }
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
