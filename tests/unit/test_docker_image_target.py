@@ -202,6 +202,67 @@ class TestDockerImageTargetStart:
         assert "defined.yaml" in exc_info.value.suggestion
 
 
+class TestPullImageWithProgress:
+    """``pull_image`` short-circuits when the image is local
+    and otherwise streams docker-py pull events to the user."""
+
+    def test_skips_pull_when_image_already_present(self, mock_client: MagicMock) -> None:
+        """images.get succeeds → no api.pull call."""
+        target = DockerImageTarget(image="my-image:latest")
+        target.pull_image()
+
+        mock_client.images.get.assert_called_once_with("my-image:latest")
+        mock_client.api.pull.assert_not_called()
+
+    def test_streams_pull_when_image_missing(self, mock_client: MagicMock) -> None:
+        """images.get raises NotFound → api.pull is iterated to completion."""
+        mock_client.images.get.side_effect = docker.errors.ImageNotFound("nope")
+        mock_client.api.pull.return_value = iter([
+            {"status": "Pulling from defined-robotics/sim"},
+            {"id": "abc123", "status": "Pulling fs layer", "progressDetail": {}},
+            {"id": "abc123", "status": "Downloading",
+             "progressDetail": {"current": 50, "total": 100}},
+            {"id": "abc123", "status": "Pull complete",
+             "progressDetail": {"current": 100, "total": 100}},
+            {"status": "Digest: sha256:deadbeef"},
+        ])
+
+        target = DockerImageTarget(image="my-image:latest")
+        target.pull_image()
+
+        mock_client.api.pull.assert_called_once_with(
+            "my-image:latest", stream=True, decode=True
+        )
+
+    def test_pull_error_event_raises_backend_error(self, mock_client: MagicMock) -> None:
+        """An ``error`` field in a pull event is mapped to BackendError with
+        the registry-auth hint when it indicates a denied pull."""
+        mock_client.images.get.side_effect = docker.errors.ImageNotFound("nope")
+        mock_client.api.pull.return_value = iter([
+            {"error": "pull access denied for ghcr.io/foo/bar, "
+                      "repository does not exist or may require 'docker login'"},
+        ])
+
+        target = DockerImageTarget(image="ghcr.io/foo/bar:latest")
+        with pytest.raises(BackendError, match="Registry denied pull") as exc_info:
+            target.pull_image()
+        assert "docker login" in exc_info.value.suggestion
+
+    def test_start_pulls_before_running(self, mock_client: MagicMock) -> None:
+        """When the image isn't local, start() pulls before containers.run."""
+        mock_client.images.get.side_effect = docker.errors.ImageNotFound("nope")
+        mock_client.api.pull.return_value = iter([
+            {"status": "Pulling from x"},
+            {"id": "l1", "status": "Already exists", "progressDetail": {}},
+        ])
+
+        target = DockerImageTarget(image="my-image:latest")
+        target.start()
+
+        mock_client.api.pull.assert_called_once()
+        mock_client.containers.run.assert_called_once()
+
+
 class TestGetClient:
     """_get_client() should distinguish daemon-down vs permission-denied."""
 
