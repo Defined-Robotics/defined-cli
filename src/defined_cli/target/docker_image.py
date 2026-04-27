@@ -18,6 +18,14 @@ from pathlib import Path
 
 import docker
 import docker.errors
+from rich.console import Console
+from rich.progress import (
+    BarColumn,
+    DownloadColumn,
+    Progress,
+    TextColumn,
+    TransferSpeedColumn,
+)
 
 from defined_rdf.robot_config import RobotConfig
 
@@ -192,6 +200,11 @@ class DockerImageTarget(TargetBase):
             )
             self._remove_existing()
 
+        # Pull the image with visible progress before handing off to the
+        # TUI. ``containers.run`` would otherwise auto-pull silently, leaving
+        # users staring at a blank terminal during a multi-GB first pull.
+        self._pull_image_with_progress()
+
         try:
             self._client.containers.run(
                 self._image,
@@ -273,6 +286,117 @@ class DockerImageTarget(TargetBase):
         return f"{_CONTAINER_BT_XML_PATH}/{host_path.name}"
 
     # -- internals --
+
+    def _pull_image_with_progress(self) -> None:
+        """Pull the image, streaming layer progress to stderr.
+
+        No-op if the image is already present locally. Raises
+        ``BackendError`` on registry/auth failures so callers see the same
+        actionable suggestions as the post-``containers.run`` handlers.
+        """
+        try:
+            self._client.images.get(self._image)
+            return
+        except docker.errors.ImageNotFound:
+            pass
+        except docker.errors.APIError as exc:
+            self._raise_pull_error(str(exc))
+
+        console = Console(stderr=True)
+        console.print(
+            f"[dim]Pulling[/] [cyan]{self._image}[/] "
+            "[dim](first run may take a few minutes)…[/]"
+        )
+
+        progress = Progress(
+            TextColumn("[cyan]{task.fields[layer]:<12}[/]"),
+            TextColumn("{task.fields[status]:<18}"),
+            BarColumn(),
+            DownloadColumn(),
+            TransferSpeedColumn(),
+            console=console,
+        )
+
+        layer_tasks: dict[str, int] = {}
+
+        try:
+            with progress:
+                for event in self._client.api.pull(
+                    self._image, stream=True, decode=True
+                ):
+                    err = event.get("error")
+                    if err:
+                        self._raise_pull_error(err)
+
+                    layer_id = event.get("id")
+                    status = event.get("status", "")
+
+                    if not layer_id:
+                        if status:
+                            console.print(f"[dim]{status}[/]")
+                        continue
+
+                    detail = event.get("progressDetail") or {}
+                    total = detail.get("total") or 0
+                    current = detail.get("current") or 0
+
+                    if layer_id not in layer_tasks:
+                        layer_tasks[layer_id] = progress.add_task(
+                            "",
+                            total=total or None,
+                            layer=layer_id[:12],
+                            status=status,
+                        )
+
+                    update_kwargs: dict = {"status": status}
+                    if total:
+                        update_kwargs["total"] = total
+                    if current:
+                        update_kwargs["completed"] = current
+                    if status in ("Pull complete", "Already exists", "Download complete"):
+                        update_kwargs["completed"] = total or 1
+                        if not total:
+                            update_kwargs["total"] = 1
+                    progress.update(layer_tasks[layer_id], **update_kwargs)
+        except docker.errors.APIError as exc:
+            self._raise_pull_error(str(exc))
+
+        console.print(f"[green]✓[/] [dim]Pulled[/] [cyan]{self._image}[/]")
+
+    def _raise_pull_error(self, message: str) -> None:
+        """Map a docker pull error string to a BackendError with hints."""
+        msg = message.lower()
+        if (
+            "pull access denied" in msg
+            or "unauthorized" in msg
+            or "denied: requested access" in msg
+        ):
+            raise BackendError(
+                f"Registry denied pull for {self._image}",
+                suggestion=(
+                    "Image is private or doesn't exist. For GHCR, "
+                    "authenticate with a PAT scoped `read:packages`: "
+                    "`echo $GHCR_PAT | docker login ghcr.io -u <user> "
+                    "--password-stdin`. Or update `sim.image:` in "
+                    "defined.yaml to a public ref."
+                ),
+                detail=message,
+            )
+        if "manifest" in msg and ("unknown" in msg or "not found" in msg):
+            raise BackendError(
+                f"Docker image not found: {self._image}",
+                suggestion=(
+                    f"Pull it manually with `docker pull {self._image}`, "
+                    "or update `sim.image:` in your defined.yaml to a "
+                    "reachable ref."
+                ),
+                detail=message,
+            )
+        raise BackendError(
+            f"Failed to pull {self._image}",
+            suggestion="Is Docker running and can it reach the registry? Try: `docker info`",
+            detail=message,
+        )
 
     def _get_existing(self):
         """Return the existing container, or None."""
