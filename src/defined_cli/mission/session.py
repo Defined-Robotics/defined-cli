@@ -169,16 +169,33 @@ class DefinedSession:
     # ------------------------------------------------------------------
 
     def connect(self) -> None:
-        """Start target (if needed), connect transport, start watchdog."""
+        """Start target (if needed), connect transport, start watchdog.
+
+        Emits an ``error`` event with the failure's message/suggestion/detail
+        before re-raising, so listeners (e.g. the TUI diagnostics panel)
+        surface the failure instead of silently staying in CONNECTING.
+        """
         with self._lock:
             self._connection_status = ConnectionStatus.CONNECTING
         self._emit("connection", "Connecting...")
 
-        if self._target.requires_launch:
-            self._emit("connection", "Starting backend...")
-            self._target.start()
-
-        self._connect_with_retries()
+        try:
+            if self._target.requires_launch:
+                self._emit("connection", "Starting backend...")
+                self._target.start()
+            self._connect_with_retries()
+        except Exception as exc:
+            with self._lock:
+                self._connection_status = ConnectionStatus.DISCONNECTED
+            suggestion = getattr(exc, "suggestion", None) or None
+            detail_str = getattr(exc, "detail", None)
+            self._emit(
+                "error",
+                str(exc),
+                suggestion=suggestion,
+                detail={"detail": detail_str} if detail_str else None,
+            )
+            raise
 
         self._transport.subscribe_reports(self._on_report)
         with self._lock:

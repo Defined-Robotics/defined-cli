@@ -100,6 +100,50 @@ class TestSessionLifecycle:
         assert any(e.category == "connection" and "Connected" in e.message for e in events)
         session.disconnect()
 
+    def test_connect_emits_error_event_when_target_start_fails(
+        self, session, mock_target
+    ):
+        """Failures in target.start() must surface as an `error` event so
+        listeners (e.g. the TUI diagnostics panel) can render them — and
+        connection status must reset to DISCONNECTED, not stick at CONNECTING.
+        """
+        from defined_cli.errors import BackendError
+
+        mock_target.start.side_effect = BackendError(
+            "Docker image not found: defined_robotics/sim:latest",
+            suggestion="Pull it manually with `docker pull ...`",
+            detail="ImageNotFound",
+        )
+        events = []
+        session.add_listener(events.append)
+
+        with pytest.raises(BackendError):
+            session.connect()
+
+        error_events = [e for e in events if e.category == "error"]
+        assert len(error_events) == 1
+        assert "Docker image not found" in error_events[0].message
+        assert "docker pull" in error_events[0].suggestion
+        assert session.connection_status == ConnectionStatus.DISCONNECTED
+
+    def test_connect_emits_error_event_when_transport_fails(
+        self, session, mock_target, mock_transport
+    ):
+        """Transport failures should also produce an error event."""
+        from defined_cli.errors import TransportConnectionError
+
+        mock_transport.connect.side_effect = TransportConnectionError(
+            "Connection refused", suggestion="Is rosbridge running?"
+        )
+        events = []
+        session.add_listener(events.append)
+
+        with pytest.raises(TransportConnectionError):
+            session.connect()
+
+        assert any(e.category == "error" for e in events)
+        assert session.connection_status == ConnectionStatus.DISCONNECTED
+
     def test_disconnect_emits_events(self, session):
         session.connect()
         events = []

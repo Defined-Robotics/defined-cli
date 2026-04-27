@@ -181,11 +181,16 @@ class DefinedApp(App):
 
     @work(thread=True)
     def _connect_background(self) -> None:
-        """Connect to transport in a worker thread — TUI stays responsive."""
+        """Connect to transport in a worker thread — TUI stays responsive.
+
+        Failures are surfaced via the session's ``error`` event (see
+        ``DefinedSession.connect``) so the diagnostics panel renders them.
+        We just log here so the traceback is available with --verbose.
+        """
         try:
             self._session.connect()
         except Exception:
-            _log.debug("Background connect failed", exc_info=True)
+            _log.error("Background connect failed", exc_info=True)
 
 
     def on_tele_panel_focus_changed(self, event: TelePanel.FocusChanged) -> None:

@@ -210,13 +210,34 @@ class DockerImageTarget(TargetBase):
         except docker.errors.ImageNotFound as exc:
             raise BackendError(
                 f"Docker image not found: {self._image}",
-                suggestion="Pull the image first: docker pull " + self._image,
+                suggestion=(
+                    f"Pull it manually with `docker pull {self._image}`, "
+                    "or update `sim.image:` in your defined.yaml to a "
+                    "reachable ref."
+                ),
                 detail=str(exc),
             ) from exc
         except docker.errors.APIError as exc:
+            api_msg = str(exc).lower()
+            if (
+                "pull access denied" in api_msg
+                or "unauthorized" in api_msg
+                or "denied: requested access" in api_msg
+            ):
+                raise BackendError(
+                    f"Registry denied pull for {self._image}",
+                    suggestion=(
+                        "Image is private or doesn't exist. For GHCR, "
+                        "authenticate with a PAT scoped `read:packages`: "
+                        "`echo $GHCR_PAT | docker login ghcr.io -u <user> "
+                        "--password-stdin`. Or update `sim.image:` in "
+                        "defined.yaml to a public ref."
+                    ),
+                    detail=str(exc),
+                ) from exc
             raise BackendError(
                 "Failed to start Docker container",
-                suggestion="Is Docker running? Try: docker info",
+                suggestion="Is Docker running? Try: `docker info`",
                 detail=str(exc),
             ) from exc
 
@@ -273,12 +294,36 @@ class DockerImageTarget(TargetBase):
 
 
 def _get_client() -> docker.DockerClient:
-    """Create a Docker client, raising BackendError on failure."""
+    """Create a Docker client, raising BackendError on failure.
+
+    Distinguishes the three common failure modes so the suggestion
+    points at the right fix:
+      - permission denied on the socket (user not in ``docker`` group)
+      - socket file missing / connection refused (daemon not running)
+      - everything else (generic "is Docker running?" hint)
+    """
     try:
         return docker.from_env()
     except docker.errors.DockerException as exc:
+        msg = str(exc).lower()
+        if "permission denied" in msg:
+            raise BackendError(
+                "Cannot connect to Docker — permission denied on socket",
+                suggestion=(
+                    "Add your user to the docker group, then re-login: "
+                    "`sudo usermod -aG docker $USER && newgrp docker`. "
+                    "Verify with: `docker info`"
+                ),
+                detail=str(exc),
+            ) from exc
+        if "no such file" in msg or "connection refused" in msg:
+            raise BackendError(
+                "Cannot connect to Docker — daemon not running",
+                suggestion="Start Docker, then verify with: `docker info`",
+                detail=str(exc),
+            ) from exc
         raise BackendError(
             "Cannot connect to Docker",
-            suggestion="Is Docker running? Try: docker info",
+            suggestion="Is Docker running? Try: `docker info`",
             detail=str(exc),
         ) from exc
