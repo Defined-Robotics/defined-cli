@@ -172,14 +172,68 @@ class TestDockerImageTargetStart:
 
     def test_start_raises_on_image_not_found(self, mock_client: MagicMock) -> None:
         """Preconditions: Docker image does not exist locally or in registry.
-        Tests: start() raises BackendError with pull suggestion.
-        Success: BackendError raised with image name in message.
+        Tests: start() raises BackendError with pull suggestion that
+        mentions both `docker pull` and the `defined.yaml` manifest.
+        Success: BackendError carries the actionable hint.
         """
         mock_client.containers.run.side_effect = docker.errors.ImageNotFound("nope")
 
         target = DockerImageTarget(image="missing:latest")
-        with pytest.raises(BackendError, match="Docker image not found"):
+        with pytest.raises(BackendError, match="Docker image not found") as exc_info:
             target.start()
+        assert "defined.yaml" in exc_info.value.suggestion
+        assert "docker pull missing:latest" in exc_info.value.suggestion
+
+    def test_start_raises_on_pull_access_denied(self, mock_client: MagicMock) -> None:
+        """Preconditions: Registry refuses the pull (401 / access denied).
+        Tests: start() distinguishes pull-denied from generic API errors and
+        suggests authenticating with the registry.
+        """
+        api_err = docker.errors.APIError(
+            "pull access denied for ghcr.io/foo/bar, repository does not exist "
+            "or may require 'docker login'"
+        )
+        mock_client.containers.run.side_effect = api_err
+
+        target = DockerImageTarget(image="ghcr.io/foo/bar:latest")
+        with pytest.raises(BackendError, match="Registry denied pull") as exc_info:
+            target.start()
+        assert "docker login" in exc_info.value.suggestion
+        assert "defined.yaml" in exc_info.value.suggestion
+
+
+class TestGetClient:
+    """_get_client() should distinguish daemon-down vs permission-denied."""
+
+    def test_permission_denied_suggests_docker_group(self) -> None:
+        from defined_cli.target.docker_image import _get_client
+        with patch("defined_cli.target.docker_image.docker.from_env") as mock:
+            mock.side_effect = docker.errors.DockerException(
+                "Error while fetching server API version: "
+                "('Connection aborted.', PermissionError(13, 'Permission denied'))"
+            )
+            with pytest.raises(BackendError, match="permission denied") as exc_info:
+                _get_client()
+            assert "usermod -aG docker" in exc_info.value.suggestion
+
+    def test_socket_missing_suggests_starting_daemon(self) -> None:
+        from defined_cli.target.docker_image import _get_client
+        with patch("defined_cli.target.docker_image.docker.from_env") as mock:
+            mock.side_effect = docker.errors.DockerException(
+                "Error while fetching server API version: "
+                "('Connection aborted.', FileNotFoundError(2, 'No such file or directory'))"
+            )
+            with pytest.raises(BackendError, match="daemon not running") as exc_info:
+                _get_client()
+            assert "Start Docker" in exc_info.value.suggestion
+
+    def test_unknown_error_falls_back_to_generic_hint(self) -> None:
+        from defined_cli.target.docker_image import _get_client
+        with patch("defined_cli.target.docker_image.docker.from_env") as mock:
+            mock.side_effect = docker.errors.DockerException("something weird")
+            with pytest.raises(BackendError, match="Cannot connect to Docker") as exc_info:
+                _get_client()
+            assert "docker info" in exc_info.value.suggestion
 
 
 # ---------------------------------------------------------------------------
