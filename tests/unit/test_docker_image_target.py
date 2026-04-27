@@ -203,13 +203,13 @@ class TestDockerImageTargetStart:
 
 
 class TestPullImageWithProgress:
-    """``_pull_image_with_progress`` short-circuits when the image is local
+    """``pull_image`` short-circuits when the image is local
     and otherwise streams docker-py pull events to the user."""
 
     def test_skips_pull_when_image_already_present(self, mock_client: MagicMock) -> None:
         """images.get succeeds → no api.pull call."""
         target = DockerImageTarget(image="my-image:latest")
-        target._pull_image_with_progress()
+        target.pull_image()
 
         mock_client.images.get.assert_called_once_with("my-image:latest")
         mock_client.api.pull.assert_not_called()
@@ -228,7 +228,7 @@ class TestPullImageWithProgress:
         ])
 
         target = DockerImageTarget(image="my-image:latest")
-        target._pull_image_with_progress()
+        target.pull_image()
 
         mock_client.api.pull.assert_called_once_with(
             "my-image:latest", stream=True, decode=True
@@ -245,7 +245,7 @@ class TestPullImageWithProgress:
 
         target = DockerImageTarget(image="ghcr.io/foo/bar:latest")
         with pytest.raises(BackendError, match="Registry denied pull") as exc_info:
-            target._pull_image_with_progress()
+            target.pull_image()
         assert "docker login" in exc_info.value.suggestion
 
     def test_start_pulls_before_running(self, mock_client: MagicMock) -> None:

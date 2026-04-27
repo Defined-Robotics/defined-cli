@@ -203,7 +203,7 @@ class DockerImageTarget(TargetBase):
         # Pull the image with visible progress before handing off to the
         # TUI. ``containers.run`` would otherwise auto-pull silently, leaving
         # users staring at a blank terminal during a multi-GB first pull.
-        self._pull_image_with_progress()
+        self.pull_image()
 
         try:
             self._client.containers.run(
@@ -285,9 +285,7 @@ class DockerImageTarget(TargetBase):
         """Translate host path to container path via bind mount."""
         return f"{_CONTAINER_BT_XML_PATH}/{host_path.name}"
 
-    # -- internals --
-
-    def _pull_image_with_progress(self) -> None:
+    def pull_image(self) -> None:
         """Pull the image, streaming layer progress to stderr.
 
         No-op if the image is already present locally. Raises
@@ -397,6 +395,8 @@ class DockerImageTarget(TargetBase):
             suggestion="Is Docker running and can it reach the registry? Try: `docker info`",
             detail=message,
         )
+
+    # -- internals --
 
     def _get_existing(self):
         """Return the existing container, or None."""

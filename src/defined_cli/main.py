@@ -256,6 +256,49 @@ def check(host: str, port: int, rdf: Path | None, task: Path | None, timeout: fl
 
 
 # ---------------------------------------------------------------------------
+# sim (sandbox / smoke-test commands for the simulation backend)
+# ---------------------------------------------------------------------------
+
+
+@cli.group()
+def sim() -> None:
+    """Simulation backend utilities."""
+
+
+@sim.command("pull")
+@click.option("--image", default=None, help="Image ref to pull (overrides manifest).")
+@click.option("--manifest", "manifest_path", type=click.Path(exists=True, path_type=Path), default=None, help="Path to defined.yaml.")
+@click.pass_context
+def sim_pull(ctx: click.Context, image: str | None, manifest_path: Path | None) -> None:
+    """Pull the sim image with visible progress (no TUI).
+
+    Use this to smoke-test pull progress without launching the full
+    interactive session. Image is taken from ``--image`` if given,
+    otherwise from ``sim.image`` in the manifest.
+    """
+    from .target.docker_image import DockerImageTarget
+
+    verbose = ctx.obj.get("verbose", False)
+
+    if image is None:
+        manifest = try_load_manifest(manifest_path)
+        if manifest is None or manifest.sim is None:
+            _console.print(
+                "[bold red]✗ No image to pull.[/]\n"
+                "[yellow]  → Pass --image, or supply a defined.yaml with `sim.image:`.[/]"
+            )
+            raise SystemExit(1)
+        image = manifest.sim.image
+
+    try:
+        target = DockerImageTarget(image=image)
+        target.pull_image()
+    except DefinedError as exc:
+        _show_error(exc, verbose=verbose)
+        raise SystemExit(1) from exc
+
+
+# ---------------------------------------------------------------------------
 # world (POI management — kept for scripting)
 # ---------------------------------------------------------------------------
 
